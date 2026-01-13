@@ -329,7 +329,7 @@ class ExperimenterGUI:
         self.root.after(10000, self.enable_buttons) # Wait 10s before enabling buttons
 
     def flush_trial_data(self): # save trial data to file
-        calibration_data_dir = os.path.join(os.path.dirname(__file__), "calibration_data")
+        calibration_data_dir = os.path.join(os.path.dirname(__file__), "..", "data","calibration_data")
         file_path = os.path.join(calibration_data_dir, f"{self.patient_info['name']}_{self.patient_info['date']}_temp_trialdata.csv")
         file_exists = os.path.exists(file_path)
         try:
@@ -403,7 +403,7 @@ class ExperimenterGUI:
         self.root.destroy()
     
     def save_data(self, filename_suffix): 
-        calibration_data_dir = os.path.join(os.path.dirname(__file__), "calibration_data")
+        calibration_data_dir = os.path.join(os.path.dirname(__file__), "..", "data","calibration_data")
         file = f"{self.patient_info['name']}_{self.patient_info['date']}_{filename_suffix}"
         full_path = os.path.join(calibration_data_dir,file)
         filename = f"{full_path}.csv"

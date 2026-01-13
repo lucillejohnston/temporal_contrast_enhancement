@@ -478,7 +478,7 @@ class ExperimenterGUI:
    
     def end_trial(self):
         self.trial_completed = True
-        data_dir = os.path.join(os.path.dirname(__file__), "task_data")
+        data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "task_data")
         file_name = f"{self.patient_info['name']}_{self.patient_info['date']}_temp_taskdata.csv"
         full_path = os.path.join(data_dir,file_name)
         file_exists = os.path.exists(full_path)
@@ -522,7 +522,7 @@ class ExperimenterGUI:
         self.root.destroy()
     
     def save_data(self, filename_suffix):
-        data_dir = os.path.join(os.path.dirname(__file__), "task_data")
+        data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "task_data")
         base_name = f"{self.patient_info['name']}_{self.patient_info['date']}_{filename_suffix}"
         full_path = os.path.join(data_dir,base_name)
         filename = f"{full_path}.csv"
