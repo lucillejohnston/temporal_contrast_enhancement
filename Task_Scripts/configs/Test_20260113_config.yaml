@@ -1,0 +1,50 @@
+T1: 46
+Thermode_Port: /dev/tty.usbmodem11401
+VAS_Port: /dev/tty.usbmodem11301
+calibration_data_file: Test_20260113_calibration_data.csv
+num_blocks: 10
+patient_info:
+    date: '20260113'
+    name: Test
+side: left
+trial_order:
+    1: step_down
+    2: hold_T1
+    3: step_up
+    4: hold_T2
+    5: step_up
+    6: hold_T1
+    7: hold_T2
+    8: step_down
+    9: step_down
+    10: step_up
+    11: hold_T1
+    12: hold_T2
+    13: step_up
+    14: step_down
+    15: hold_T2
+    16: hold_T1
+    17: step_down
+    18: hold_T1
+    19: step_up
+    20: hold_T2
+    21: step_down
+    22: hold_T1
+    23: hold_T2
+    24: step_up
+    25: hold_T1
+    26: step_up
+    27: hold_T2
+    28: step_down
+    29: step_down
+    30: hold_T1
+    31: step_up
+    32: hold_T2
+    33: hold_T1
+    34: step_up
+    35: hold_T2
+    36: step_down
+    37: step_down
+    38: step_up
+    39: hold_T2
+    40: hold_T1
