@@ -2,6 +2,10 @@
 """
 Fit the Cecchi 2012 ODE model
 and testing with leave one trial out cross-validation
+on temporal contrast enhancement data.
+
+Author: Lucille Johnston
+Updated: 1/13/26
 """
 #%%
 import pandas as pd
@@ -19,7 +23,7 @@ from scipy.interpolate import interp1d
 from scipy.integrate import solve_ivp
 from datetime import datetime
 
-DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/' # path for data files
+DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/' # path for data files
 FIG_PATH = '/Users/ljohnston1/Desktop/Python/TCE_Figures/' # path for saving figures
 
 TRIAL_DATA = DATA_PATH + 'trial_data_trimmed_downsampled.json'
@@ -76,46 +80,46 @@ for subject in sorted(data_df['subject'].unique()):
     comparison_data.append(comparison_entry)
 comparison_df = pd.DataFrame(comparison_data)
 
-# # Visualize the differences
-# fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-# # Histogram of thresholds from trial data
-# ax1.hist(comparison_df['threshold_from_data'], bins=15, alpha=0.7, color='blue', edgecolor='black')
-# ax1.set_xlabel('Threshold Temperature (°C)')
-# ax1.set_ylabel('Number of Subjects')
-# ax1.set_title('Thresholds from Trial Data')
-# ax1.grid(True, alpha=0.3)
+# Visualize the differences
+fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+# Histogram of thresholds from trial data
+ax1.hist(comparison_df['threshold_from_data'], bins=15, alpha=0.7, color='blue', edgecolor='black')
+ax1.set_xlabel('Threshold Temperature (°C)')
+ax1.set_ylabel('Number of Subjects')
+ax1.set_title('Thresholds from Trial Data')
+ax1.grid(True, alpha=0.3)
 
-# # Histogram of thresholds from limits data
-# ax2.hist(comparison_df['threshold_from_limits'], bins=15, alpha=0.7, color='red', edgecolor='black')
-# ax2.set_xlabel('Threshold Temperature (°C)')
-# ax2.set_ylabel('Number of Subjects')
-# ax2.set_title('Thresholds from Limits Data')
-# ax2.grid(True, alpha=0.3)
+# Histogram of thresholds from limits data
+ax2.hist(comparison_df['threshold_from_limits'], bins=15, alpha=0.7, color='red', edgecolor='black')
+ax2.set_xlabel('Threshold Temperature (°C)')
+ax2.set_ylabel('Number of Subjects')
+ax2.set_title('Thresholds from Limits Data')
+ax2.grid(True, alpha=0.3)
 
-# # Scatter plot comparison
-# correlation = comparison_df['threshold_from_data'].corr(comparison_df['threshold_from_limits'])
-# ax3.scatter(comparison_df['threshold_from_data'], comparison_df['threshold_from_limits'], alpha=0.7)
-# min_val = min(comparison_df['threshold_from_data'].min(), comparison_df['threshold_from_limits'].min())
-# max_val = max(comparison_df['threshold_from_data'].max(), comparison_df['threshold_from_limits'].max())
-# ax3.set_xlabel('Threshold from Trial Data (°C)')
-# ax3.set_ylabel('Threshold from Limits Data (°C)')
-# ax3.set_title('Comparing Thresholds')
-# ax3.legend()
-# ax3.grid(True, alpha=0.3)
+# Scatter plot comparison
+correlation = comparison_df['threshold_from_data'].corr(comparison_df['threshold_from_limits'])
+ax3.scatter(comparison_df['threshold_from_data'], comparison_df['threshold_from_limits'], alpha=0.7)
+min_val = min(comparison_df['threshold_from_data'].min(), comparison_df['threshold_from_limits'].min())
+max_val = max(comparison_df['threshold_from_data'].max(), comparison_df['threshold_from_limits'].max())
+ax3.set_xlabel('Threshold from Trial Data (°C)')
+ax3.set_ylabel('Threshold from Limits Data (°C)')
+ax3.set_title('Comparing Thresholds')
+ax3.legend()
+ax3.grid(True, alpha=0.3)
 
-# # Difference histogram
-# ax4.hist(comparison_df['difference'], bins=15, alpha=0.7, color='purple', edgecolor='black')
-# ax4.axvline(x=0, color='r', linestyle='--', label='No Difference')
-# ax4.axvline(x=comparison_df['difference'].mean(), color='b', linestyle='-', 
-#             label=f'Mean: {comparison_df["difference"].mean():+.2f}°C')
-# ax4.set_xlabel('Difference (Limits - Data) (°C)')
-# ax4.set_ylabel('Number of Subjects')
-# ax4.set_title('Distribution of Differences')
-# ax4.legend()
-# ax4.grid(True, alpha=0.3)
+# Difference histogram
+ax4.hist(comparison_df['difference'], bins=15, alpha=0.7, color='purple', edgecolor='black')
+ax4.axvline(x=0, color='r', linestyle='--', label='No Difference')
+ax4.axvline(x=comparison_df['difference'].mean(), color='b', linestyle='-', 
+            label=f'Mean: {comparison_df["difference"].mean():+.2f}°C')
+ax4.set_xlabel('Difference (Limits - Data) (°C)')
+ax4.set_ylabel('Number of Subjects')
+ax4.set_title('Distribution of Differences')
+ax4.legend()
+ax4.grid(True, alpha=0.3)
 
-# plt.tight_layout()
-# plt.show()
+plt.tight_layout()
+plt.show()
 
 
 
@@ -134,7 +138,7 @@ RESULTS_FILE = f"{CHECKPOINT_DIR}optimization_results_{timestamp}.pkl"
 print(f"\n{'='*60}")
 print(f"🚀 OPTIMIZATION CONFIGURATION")
 print(f"{'='*60}")
-print(f"Model: Full Cecchi 2012")
+print(f"Model: Simplified Cecchi 2012")
 print(f"Subjects to process: {N_SUBJECTS}")
 print(f"Multiple starts: {USE_MULTIPLE_STARTS} (n={N_STARTS})")
 print(f"Optimize theta: {OPTIMIZE_THETA}")
@@ -160,7 +164,6 @@ if os.path.exists(RESULTS_FILE):
         print(f"📂 Loaded checkpoint with {len(optimization_results)} subjects already processed\n")
     except Exception as e:
         print(f"⚠️  Could not load checkpoint: {e}\n")
-
 
 
 
@@ -198,7 +201,7 @@ for subject_idx, subject in enumerate(subjects_to_process):
     
     try:
         # Run optimization
-        best_params, best_result = optimize_cecchi_full(
+        best_params, best_result = optimize_cecchi_simplified(
             subject_data,
             threshold=threshold,
             initial_params=None,  # Use Petre 2017 defaults
@@ -258,21 +261,20 @@ print(f"Results saved to: {RESULTS_FILE}")
 print(f"{'='*60}\n")
 
 #%% 
-# # Load optimization results and plot
-# with open(RESULTS_FILE, 'rb') as f:
-#     checkpoint_data = pickle.load(f)
-#     optimization_results = checkpoint_data['optimization_results']
+# Load optimization results and plot
+with open(RESULTS_FILE, 'rb') as f:
+    checkpoint_data = pickle.load(f)
+    optimization_results = checkpoint_data['optimization_results']
 
-# # Plot a single subject with all details
-# plot_optimization_fit(33, optimization_results, 
-#                                  save_path=f"{FIG_PATH}subject_33_detailed.png")
+# Plot a single subject with all details
+plot_optimization_fit(33, optimization_results, 
+                                 save_path=f"{FIG_PATH}subject_33_detailed.png")
 
-# # Create summary grid for all subjects
-# plot_multiple_subjects_summary(optimization_results, 
-#                                save_path=f"{FIG_PATH}all_subjects_summary.png")
+# Create summary grid for all subjects
+plot_multiple_subjects_summary(optimization_results, 
+                               save_path=f"{FIG_PATH}all_subjects_summary.png")
 
-# # Print summary table
-# print_optimization_summary(optimization_results)
+# Print summary table
+print_optimization_summary(optimization_results)
 
-
-# %%
+#%%
