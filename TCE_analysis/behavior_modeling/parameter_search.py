@@ -500,3 +500,116 @@ def test_high_force_scaling(subject_data):
 # Run the optimization
 best_params, all_results = optimize_simplified_parameters(subject_data)
 test_high_force_scaling(subject_data)
+
+#%%
+def test_gradient_sensitivity(subject_data):
+    """Test if small parameter changes affect the cost"""
+    
+    time_data, temp_data, pain_data, _, _ = prepare_data_for_optimization(subject_data)
+    temp_func = interp1d(time_data, temp_data, kind='linear', bounds_error=False, fill_value='extrapolate')
+    
+    # Test parameters around the "optimal" values
+    base_params = [1.0, 0.08]  # alpha_bar, gamma_bar
+    
+    print("Testing parameter sensitivity:")
+    print("alpha_bar  gamma_bar    MSE")
+    print("-" * 30)
+    
+    for alpha_mult in [0.8, 1.0, 1.2]:
+        for gamma_mult in [0.8, 1.0, 1.2]:
+            test_alpha = base_params[0] * alpha_mult
+            test_gamma = base_params[1] * gamma_mult
+            
+            # Test this parameter combination
+            model_params = {
+                'alpha_bar': test_alpha,
+                'gamma_bar': test_gamma,
+                'theta': 42.0  # Use average threshold
+            }
+            
+            t_span = (time_data[0], time_data[-1])
+            y0 = [0.0]
+            
+            try:
+                sol = solve_ivp(cecchi2012_simplified, t_span, y0,
+                               args=(model_params, temp_func),
+                               t_eval=time_data, method='RK45',
+                               rtol=1e-3, atol=1e-6)
+                
+                if sol.success:
+                    model_pain = np.maximum(sol.y[0], 0.0)
+                    mse = np.mean((pain_data - model_pain) ** 2)
+                    print(f"{test_alpha:8.3f}  {test_gamma:8.3f}  {mse:8.1f}")
+                else:
+                    print(f"{test_alpha:8.3f}  {test_gamma:8.3f}     FAIL")
+            except:
+                print(f"{test_alpha:8.3f}  {test_gamma:8.3f}     ERROR")
+
+# Test on subject 33
+subject_33_data = data_df[data_df['subject'] == 33]
+test_gradient_sensitivity(subject_33_data)
+
+
+
+def manual_parameter_search(subject_data, alpha_range, gamma_range):
+    """Manually search parameter space"""
+    
+    time_data, temp_data, pain_data, _, _ = prepare_data_for_optimization(subject_data)
+    temp_func = interp1d(time_data, temp_data, kind='linear', bounds_error=False, fill_value='extrapolate')
+    threshold = extract_threshold_from_data(subject_data, vas_threshold=5)
+    
+    best_mse = float('inf')
+    best_params = None
+    results = []
+    
+    for alpha_bar in alpha_range:
+        for gamma_bar in gamma_range:
+            model_params = {
+                'alpha_bar': alpha_bar,
+                'gamma_bar': gamma_bar,
+                'theta': threshold
+            }
+            
+            t_span = (time_data[0], time_data[-1])
+            y0 = [0.0]
+            
+            try:
+                sol = solve_ivp(cecchi2012_simplified, t_span, y0,
+                               args=(model_params, temp_func),
+                               t_eval=time_data[:1000],  # Use subset for speed
+                               method='RK45', rtol=1e-3, atol=1e-6)
+                
+                if sol.success:
+                    model_pain = np.maximum(sol.y[0], 0.0)
+                    mse = np.mean((pain_data[:1000] - model_pain) ** 2)
+                    
+                    results.append({
+                        'alpha_bar': alpha_bar,
+                        'gamma_bar': gamma_bar,
+                        'mse': mse
+                    })
+                    
+                    if mse < best_mse:
+                        best_mse = mse
+                        best_params = model_params.copy()
+                        
+            except:
+                pass
+    
+    # Sort results by MSE
+    results.sort(key=lambda x: x['mse'])
+    
+    print("Top 10 parameter combinations:")
+    print("alpha_bar  gamma_bar    MSE")
+    print("-" * 30)
+    for r in results[:10]:
+        print(f"{r['alpha_bar']:8.2f}  {r['gamma_bar']:8.3f}  {r['mse']:8.1f}")
+    
+    return best_params, results
+
+# Test with wider parameter ranges
+alpha_range = [0.5, 1.0, 2.0, 5.0, 10.0]
+gamma_range = [0.01, 0.05, 0.1, 0.2, 0.5]
+
+best_manual, all_results = manual_parameter_search(subject_33_data, alpha_range, gamma_range)
+

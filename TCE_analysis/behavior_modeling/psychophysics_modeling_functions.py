@@ -140,6 +140,11 @@ def cecchi2012_simplified(t, y, params, T_func):
     
     # First-order equation: p'(t) = ᾱF(T,T₀) - γ̄p(t)
     pain_rate = alpha_bar * F_T - gamma_bar * pain
+
+    if pain >= 100.0 and pain_rate > 0:
+        pain_rate = 0.0  # Stop increasing when at max
+    elif pain < 0.0 and pain_rate < 0:
+        pain_rate = 0.0  # Stop decreasing when at min
     
     return [pain_rate]
 
@@ -491,29 +496,29 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
     # Parameter bounds
     if optimize_theta:
         bounds = [
-            (0.5, 1.5), # alpha_bar: based on parameter search
-            (0.05, 0.15), # gamma_bar: based on parameter search
-            (37.0, 44.0) # theta 
+            (0.5, 8.0), # alpha_bar: based on parameter search
+            (0.01, 0.6), # gamma_bar: based on parameter search
+            (37.0, 50.0) # theta 
         ]
         x0_default = [initial_params['alpha_bar'],
                       initial_params['gamma_bar'],
                       initial_params['theta']]
     else:
         bounds = [
-            (0.5, 1.5), # alpha_bar: based on parameter search
-            (0.05, 0.15) # gamma_bar: based on parameter search
+            (0.5, 10.0), # alpha_bar: based on parameter search
+            (0.01, 0.6) # gamma_bar: based on parameter search
         ]
         x0_default = [initial_params['alpha_bar'],
                       initial_params['gamma_bar']]
     
     # Generate starting points
     if use_multiple_starts:
-        starting_points = [x0_default] # Always include default
-        for _ in range(n_starts - 1):
+        starting_points = []
+        for _ in range(n_starts):
             random_start = [np.random.uniform(b[0],b[1]) for b in bounds]
             starting_points.append(random_start)
     else:
-        starting_points = [x0_default]
+        starting_points = [[np.random.uniform(0.8, 1.2), np.random.uniform(0.08, 0.12)]]
 
     # Try each starting point
     best_result = None
@@ -526,7 +531,12 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
         # Test initial cost
         initial_cost = objective(x0)
         result = minimize(objective, x0, method='L-BFGS-B',
-                          bounds=bounds, options={'maxiter':1000, 'ftol':1e-9})
+                          bounds=bounds, options={'maxiter':1000,
+                                                  'maxfun': 5000, 
+                                                  'ftol':1e-12,      # Tighter tolerance
+                                                  'gtol': 1e-10,     # Tighter gradient tolerance
+                                                  'eps': 1e-6,       # Larger step size for gradient estimation
+                                                  'finite_diff_rel_step': 1e-4})     # Larger relative step
         
         if verbose:
             status = "✓" if result.success else "✗"
@@ -558,6 +568,39 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
             'n_iters': best_result.nit,
             'best_start_index': best_start_idx
         }
+
+        # Re-run model once to get predictions for storage
+        model_params = {
+        'alpha_bar': alpha_bar,
+        'gamma_bar': gamma_bar,
+        'theta': theta
+        }
+        t_span = (time_data[0], time_data[-1])
+        y0 = [0.0]
+
+        try:
+            print(f"    Re-running model to save predictions...")
+            sol = solve_ivp(cecchi2012_simplified, t_span, y0,
+                            args=(model_params, temp_func),
+                            t_eval=time_data, method='RK45',
+                            rtol=1e-4, atol=1e-6)
+            if sol.success:
+                model_pain = np.maximum(sol.y[0], 0.0)
+                model_pain[model_pain > 100.0] = 100.0 # Cap at 100
+                best_params['model_data'] = {
+                    'time': time_data,
+                    'predicted_pain': model_pain,
+                    'observed_pain': pain_data,
+                    'temperature': temp_data
+                }
+                print(f"    ✅ Model data saved successfully!")
+            else:
+                print(f"    ❌ Final model solve failed: {sol.message}")
+        except Exception as e:
+            print(f"    ❌ Error during final solve: {e}")
+            import traceback
+            traceback.print_exc()
+
         if verbose:
             print(f"\n   ✅ Optimization successful (start #{best_start_idx+1}):")
             print(f"      ᾱ={alpha_bar:.4f}, γ̄={gamma_bar:.4f}, θ={theta:.2f}")
@@ -569,10 +612,17 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
     return best_params, best_result
 
 
+
+
+
+
+
+
 ################## Plotting Functions ##################
 def plot_optimization_fit(subject, optimization_results, save_path=None, figsize=(14,10)):
     """
     Plot observed vs. predicted pain using saved optimization results.
+    Updated for simplified model parameters.
     
     Parameters:
     subject : int
@@ -607,7 +657,7 @@ def plot_optimization_fit(subject, optimization_results, save_path=None, figsize
     observed_pain = data['observed_pain']
     model_pain = data['predicted_pain']
 
-    # Calculate R²
+    # Calculate fit statistics
     residuals = observed_pain - model_pain
     mse = params['mse']
     rmse = np.sqrt(mse)
@@ -623,7 +673,7 @@ def plot_optimization_fit(subject, optimization_results, save_path=None, figsize
              color='orange', linewidth=2, markersize=3, alpha=0.7)
     ax1.axhline(params['theta'], color='red', linestyle='--', label='Threshold (θ)')
     ax1.set_ylabel('Temperature (°C)', fontsize=12, fontweight='bold')
-    ax1.set_title(f'Subject {subject} - Model Fit Results ({params["n_trials"]} trials, {params["n_points"]} points)', 
+    ax1.set_title(f'Subject {subject} - Simplified Model Fit ({params["n_trials"]} trials, {params["n_points"]} points)', 
                  fontsize=14, fontweight='bold')
     ax1.legend(loc='upper right', fontsize=11)
     ax1.set_ylim(30, 50)
@@ -635,7 +685,7 @@ def plot_optimization_fit(subject, optimization_results, save_path=None, figsize
              color='blue', linewidth=2, alpha=0.7, linestyle='-')
     ax2.set_ylabel('Pain (VAS)', fontsize=12, fontweight='bold')
     ax2.legend(loc='upper right', fontsize=11)
-    ax2.set_ylim(0, 100)
+    ax2.set_ylim(0, 105)
 
     # Bottom plot: Residuals over time
     ax3.plot(time, residuals, color='purple', alpha=0.6, linewidth=1)
@@ -646,18 +696,16 @@ def plot_optimization_fit(subject, optimization_results, save_path=None, figsize
     ax3.set_ylim(-100, 100)
     ax3.set_title('Model Residuals', fontsize=11)
 
-    # Add text box with parameters and fit statistics
-    param_text = (f'Parameters:\n'
-                  f'α = {params["alpha"]:.4f}\n'
-                 f'β = {params["beta"]:.2f}\n'
-                 f'γ = {params["gamma"]:.4f}\n'
-                 f'λ = {params["lambda_param"]:.4f}\n'
-                 f'θ = {params["theta"]:.2f}°C\n'
-                 f'\nFit Statistics:\n'
-                 f'R² = {r2:.3f}\n'
-                 f'RMSE = {rmse:.2f}\n'
-                 f'MAE = {mae:.2f}\n'
-                 f'Corr = {correlation:.3f}')
+    # Add text box with SIMPLIFIED MODEL parameters and fit statistics
+    param_text = (f'Simplified Model Parameters:\n'
+                  f'ᾱ = {params["alpha_bar"]:.4f}\n'
+                  f'γ̄ = {params["gamma_bar"]:.4f}\n'
+                  f'θ = {params["theta"]:.2f}°C\n'
+                  f'\nFit Statistics:\n'
+                  f'R² = {r2:.3f}\n'
+                  f'RMSE = {rmse:.2f}\n'
+                  f'MAE = {mae:.2f}\n'
+                  f'Corr = {correlation:.3f}')
     ax2.text(0.98, 0.97, param_text, transform=ax2.transAxes,
              fontsize=9, verticalalignment='top', horizontalalignment='right',
              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
@@ -672,111 +720,10 @@ def plot_optimization_fit(subject, optimization_results, save_path=None, figsize
     return fig
     
 
-def plot_multiple_subjects_summary(optimization_results, subjects=None, ncols=3, save_path=None):
-    """
-    Create a summary grid showing fit quality for multiple subjects.
-    
-    Parameters:
-    -----------
-    optimization_results : dict
-        Dictionary of optimization results
-    subjects : list, optional
-        List of subjects to plot (if None, uses all available)
-    ncols : int
-        Number of columns in grid
-    save_path : str, optional
-        Path to save figure
-        
-    Returns:
-    --------
-    fig : matplotlib.figure.Figure
-        The figure object
-    """
-    from sklearn.metrics import r2_score
-    
-    if subjects is None:
-        subjects = sorted(list(optimization_results.keys()))
-    
-    nrows = int(np.ceil(len(subjects) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5*ncols, 4*nrows))
-    
-    # Handle single row case
-    if nrows == 1 and ncols == 1:
-        axes = np.array([[axes]])
-    elif nrows == 1:
-        axes = axes.reshape(1, -1)
-    elif ncols == 1:
-        axes = axes.reshape(-1, 1)
-    
-    for idx, subject in enumerate(subjects):
-        row = idx // ncols
-        col = idx % ncols
-        ax = axes[row, col]
-        
-        if subject not in optimization_results:
-            ax.text(0.5, 0.5, f'Subject {subject}\nNo Data', 
-                   ha='center', va='center', transform=ax.transAxes, fontsize=12)
-            ax.set_xticks([])
-            ax.set_yticks([])
-            continue
-        
-        params = optimization_results[subject]['params']
-        
-        if 'model_data' not in params:
-            ax.text(0.5, 0.5, f'Subject {subject}\nNo Model Data', 
-                   ha='center', va='center', transform=ax.transAxes, fontsize=12)
-            ax.set_xticks([])
-            ax.set_yticks([])
-            continue
-        
-        # Extract data
-        data = params['model_data']
-        pain_data = data['observed_pain']
-        model_pain = data['predicted_pain']
-        
-        # Calculate R²
-        r2 = r2_score(pain_data, model_pain)
-        mse = params['mse']
-        
-        # Scatter plot: observed vs predicted
-        ax.scatter(pain_data, model_pain, alpha=0.5, s=10, color='blue', edgecolors='none')
-        
-        # Add identity line (perfect fit)
-        max_val = max(pain_data.max(), model_pain.max())
-        ax.plot([0, max_val], [0, max_val], 'r--', linewidth=2, label='Perfect Fit')
-        
-        # Labels and title
-        ax.set_xlabel('Observed Pain (VAS)', fontsize=10)
-        ax.set_ylabel('Predicted Pain (VAS)', fontsize=10)
-        ax.set_title(f'Subject {subject}\nR²={r2:.3f}, MSE={mse:.1f}', fontsize=11, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
-        
-        # Equal aspect ratio
-        ax.set_aspect('equal', adjustable='box')
-    
-    # Hide unused subplots
-    for idx in range(len(subjects), nrows * ncols):
-        row = idx // ncols
-        col = idx % ncols
-        axes[row, col].axis('off')
-    
-    plt.suptitle('Model Fit Summary: Observed vs Predicted Pain', 
-                fontsize=16, fontweight='bold', y=1.00)
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Summary figure saved to: {save_path}")
-    
-    plt.show()
-
-    return fig
-
-
 def print_optimization_summary(optimization_results):
     """
     Print a summary table of all optimization results.
+    Updated for simplified model parameters.
     
     Parameters:
     -----------
@@ -786,7 +733,7 @@ def print_optimization_summary(optimization_results):
     from sklearn.metrics import r2_score
     
     print(f"\n{'='*80}")
-    print(f"OPTIMIZATION RESULTS SUMMARY")
+    print(f"SIMPLIFIED MODEL OPTIMIZATION RESULTS SUMMARY")
     print(f"{'='*80}\n")
     
     # Collect statistics
@@ -804,10 +751,8 @@ def print_optimization_summary(optimization_results):
         summary_data.append({
             'subject': subject,
             'theta': params['theta'],
-            'alpha': params['alpha'],
-            'beta': params['beta'],
-            'gamma': params['gamma'],
-            'lambda': params['lambda_param'],
+            'alpha_bar': params['alpha_bar'],  # Changed from 'alpha'
+            'gamma_bar': params['gamma_bar'],  # Changed from 'gamma'
             'mse': params['mse'],
             'r2': r2,
             'n_trials': params['n_trials'],
@@ -817,17 +762,15 @@ def print_optimization_summary(optimization_results):
             'best_start': params['best_start_index'] + 1
         })
     
-    # Print table header
-    print(f"{'Subj':<6} {'θ':>7} {'α':>8} {'β':>8} {'γ':>8} {'λ':>8} {'MSE':>8} {'R²':>6} {'Trials':>7} {'Pts':>6} {'Evals':>6} {'Iters':>6} {'Start':>6}")
-    print(f"{'-'*6} {'-'*7} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*6} {'-'*7} {'-'*6} {'-'*6} {'-'*6} {'-'*6}")
+    # Print table header (updated for simplified model)
+    print(f"{'Subj':<6} {'θ':>7} {'ᾱ':>8} {'γ̄':>8} {'MSE':>8} {'R²':>6} {'Trials':>7} {'Pts':>6} {'Evals':>6} {'Iters':>6} {'Start':>6}")
+    print(f"{'-'*6} {'-'*7} {'-'*8} {'-'*8} {'-'*8} {'-'*6} {'-'*7} {'-'*6} {'-'*6} {'-'*6} {'-'*6}")
     
     for s in summary_data:
         print(f"{s['subject']:<6} "
               f"{s['theta']:>7.2f} "
-              f"{s['alpha']:>8.4f} "
-              f"{s['beta']:>8.2f} "
-              f"{s['gamma']:>8.4f} "
-              f"{s['lambda']:>8.4f} "
+              f"{s['alpha_bar']:>8.4f} "
+              f"{s['gamma_bar']:>8.4f} "
               f"{s['mse']:>8.1f} "
               f"{s['r2']:>6.3f} "
               f"{s['n_trials']:>7} "
@@ -836,15 +779,15 @@ def print_optimization_summary(optimization_results):
               f"{s['n_iters']:>6} "
               f"{s['best_start']:>6}")
     
-    # Print summary statistics
+    # Print summary statistics (updated for simplified model)
     print(f"\n{'-'*80}")
     print(f"SUMMARY STATISTICS (n={len(summary_data)} subjects)")
     print(f"{'-'*80}")
     
-    for param in ['theta', 'alpha', 'beta', 'gamma', 'lambda', 'mse', 'r2']:
+    for param in ['theta', 'alpha_bar', 'gamma_bar', 'mse', 'r2']:
         values = [s[param] for s in summary_data if not np.isnan(s[param])]
         if values:
-            print(f"{param:>8}: mean={np.mean(values):>8.4f}, "
+            print(f"{param:>9}: mean={np.mean(values):>8.4f}, "
                   f"std={np.std(values):>8.4f}, "
                   f"min={np.min(values):>8.4f}, "
                   f"max={np.max(values):>8.4f}")
@@ -852,8 +795,11 @@ def print_optimization_summary(optimization_results):
     print(f"{'='*80}\n")
 
 
+
+
+
+
 ################# Side functions to check data quality #################
-#%%
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd

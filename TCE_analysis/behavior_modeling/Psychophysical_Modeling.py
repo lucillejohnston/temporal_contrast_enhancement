@@ -31,14 +31,14 @@ LIMITS_DATA = DATA_PATH + 'limits_data.csv'
 # Load the raw trial data (for time series plotting)
 data_df = pd.read_json(TRIAL_DATA, orient='records')
 limits_data = pd.read_csv(LIMITS_DATA)
-# Parameters from Petre 2017
-petre_params = {
-    'alpha': 2.4932,
-    'beta': 36.7552,
-    'gamma': 0.0204,
-    'lambda_param': 0.0169,
-    'theta': 37.1913,
-}
+# # Parameters from Petre 2017
+# petre_params = {
+#     'alpha': 2.4932,
+#     'beta': 36.7552,
+#     'gamma': 0.0204,
+#     'lambda_param': 0.0169,
+#     'theta': 37.1913,
+# }
 #%%
 # First, determine pain threshold (theta) for each subject
 subject_thresholds_from_data = {}
@@ -126,9 +126,9 @@ plt.show()
 #%% 
 # Configuration for optimization approach
 # 137 subjects maximum
-N_SUBJECTS = 5 # Number of subjects to process
+N_SUBJECTS = 20 # Number of subjects to process
 USE_MULTIPLE_STARTS = True  # Try multiple random starting points
-N_STARTS = 5  # Number of random starts per subject
+N_STARTS = 10  # Number of random starts per subject
 OPTIMIZE_THETA = False  # Use data-derived thresholds (set to True to optimize theta too)
 # Output paths
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -221,8 +221,8 @@ for subject_idx, subject in enumerate(subjects_to_process):
             subject_time = time.time() - subject_start_time
             print(f"\n✅ Subject {subject} completed in {subject_time:.1f}s")
             print(f"   Final MSE: {best_params['mse']:.2f}")
-            print(f"   Parameters: α={best_params['alpha']:.4f}, β={best_params['beta']:.4f}, "
-                  f"γ={best_params['gamma']:.4f}, λ={best_params['lambda_param']:.4f}")
+            print(f"   Parameters: ᾱ={best_params['alpha_bar']:.4f}, γ̄={best_params['gamma_bar']:.4f}, θ={best_params['theta']:.2f}")
+
             
             # Save checkpoint after each subject
             checkpoint_data = {
@@ -260,21 +260,17 @@ print(f"Average time per subject: {total_time/max(len(optimization_results),1):.
 print(f"Results saved to: {RESULTS_FILE}")
 print(f"{'='*60}\n")
 
-#%% 
-# Load optimization results and plot
+
+#%%
+# Load results to plot model fit
 with open(RESULTS_FILE, 'rb') as f:
     checkpoint_data = pickle.load(f)
     optimization_results = checkpoint_data['optimization_results']
 
-# Plot a single subject with all details
-plot_optimization_fit(33, optimization_results, 
-                                 save_path=f"{FIG_PATH}subject_33_detailed.png")
-
-# Create summary grid for all subjects
-plot_multiple_subjects_summary(optimization_results, 
-                               save_path=f"{FIG_PATH}all_subjects_summary.png")
+# Plot individual subjects
+for key in optimization_results.keys():
+    plot_optimization_fit(key, optimization_results)
 
 # Print summary table
 print_optimization_summary(optimization_results)
-
-#%%
+# %%
