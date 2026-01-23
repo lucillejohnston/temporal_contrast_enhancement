@@ -9,11 +9,37 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from sklearn.metrics.pairwise import euclidean_distances
+import json
+from typing import Dict, List, Tuple, Any, Optional
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
 
 # Path to the cleaned, aligned trial data
-DATA_PATH = '/userdata/ljohnston/TCE_analysis/data_from_ben/trial_data_cleaned_aligned.json'
+DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_cleaned_aligned.json'
+OUTPUT_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_metrics.json'
 
+temp_change_offset = 0.67 # seconds, changing 1C in 1.5C/s
+window_size = 5
+period_c_duration = 20
+trial_definitions = {
+    'inv': ['T2', 'T1', 'T2'],
+    't2_hold': ['T2', 'T2', 'T2'],
+    'offset': ['T1', 'T2', 'T1'],
+    't1_hold': ['T1', 'T1', 'T1'],
+    'stepdown': ['T2', 'T2', 'T1']
+}
+trial_type_info = {
+    'inv':      {'kind': 'stepped', 'extrema_order': ['min', 'max'], 'reference': None},
+    'offset':   {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
+    'stepdown': {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
+    't1_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['offset','stepdown']},
+    't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': 'inv'}
+}
+
+
+# Load data
 if not os.path.exists(DATA_PATH):
     raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
 
@@ -29,21 +55,38 @@ df = pd.read_json(DATA_PATH, orient='records')
 # temperature_aligned_for_plot - temperature shifted for plotting
 
 #%%
-"""
-Section 2: Metric Calculation Functions
+# =========================================================
+# FUNCTIONS
+# =========================================================
 
-Defines helper functions for extracting metrics from trial data.
-"""
-temp_change_offset = 0.67 # seconds, changing 1C in 1.5C/s
-trial_definitions = {
-    'inv': ['T2', 'T1', 'T2'],
-    't2_hold': ['T2', 'T2', 'T2'],
-    'offset': ['T1', 'T2', 'T1'],
-    't1_hold': ['T1', 'T1', 'T1'],
-    'stepdown': ['T2', 'T2', 'T1']
-}
+# Utility Functions
+def convert_to_serializable(obj: Any) -> Any:
+    """Convert numpy types to JSON-serializable types."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj) if not np.isnan(obj) else None
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
 
-def define_timewindows(trial_type, trial_definitions, base_offset=0.0):
+def get_trial_ramp_time(trial_df, default_ramp_time=15.0):
+    """Calculate ramp time for a single trial"""
+    post_ramp = trial_df[trial_df['aligned_time'] > 5].copy()
+    if len(post_ramp) < 10:
+        return default_ramp_time
+    
+    temp_diff = post_ramp['temperature'].diff().rolling(3).mean().abs()
+    stable_mask = temp_diff < 0.1
+    
+    if stable_mask.any():
+        stable_time = post_ramp.loc[stable_mask, 'aligned_time'].iloc[0]
+        return stable_time
+    else:
+        return default_ramp_time
+
+# Time Window and AUC Functions
+def define_timewindows(trial_type, trial_definitions, base_offset):
     """
     Define the start and end times for the three periods based on the trial's temperature settings.
     Args:
@@ -73,7 +116,7 @@ def define_timewindows(trial_type, trial_definitions, base_offset=0.0):
             'B': (start_B, end_B),
             'C': (start_C, end_C)}
 
-def compute_aucs(pain_series, trial_type, trial_definitions, base_offset=0.0):
+def compute_aucs(pain_series, trial_type, trial_definitions, base_offset):
     """
     Compute AUCs over the time windows defined by the trial's temperature settings.
     
@@ -87,7 +130,6 @@ def compute_aucs(pain_series, trial_type, trial_definitions, base_offset=0.0):
     """
     # Get boundaries for each period
     time_windows = define_timewindows(trial_type, trial_definitions, base_offset)
-    
     aucs = {}
     auc_total = 0
     for period in ['A', 'B', 'C']:
@@ -105,40 +147,53 @@ def compute_aucs(pain_series, trial_type, trial_definitions, base_offset=0.0):
 def extract_extrema(
         pain_series: pd.Series,
         trial_type: str,
-        extrema_order_map: dict,
-        trial_definitions: dict,
         mode: str = 'local',
         reference_times: dict = None,
-        base_offset: float = 0.0,
-        window_size: float = 5.0
-) -> dict:
+        base_offset: float = 5.0,               # In preprocessing, added 5s buffer before trial start
+    ) -> dict:
     """
     Extract extrema (min/max) and related metrics from a pain series.
 
-    Args:
+    Parameters:
         pain_series (pd.Series): Pain ratings indexed by aligned_time.
         trial_type (str): The trial type key.
-        extrema_order_map (dict): Mapping of trial_type to extrema order.
-        trial_definitions (dict): Mapping of trial_type to temperature sequence.
         mode (str): 'local' for local extrema, 'control' for extracting at reference times.
         reference_times (dict): Dict with 'min_time' and 'max_time' (used if mode='control').
         base_offset (float): Time offset for the start of the trial.
-        window_size (float): Window size (seconds) around transition (used if mode='local').
-
     Returns:
         dict: Extrema values, times, peak-to-peak, and latency.
     """
     if mode == 'local': # for offset, inv, stepdown trials 
+        return _extract_local_extrema(pain_series, trial_type, base_offset)
+    elif mode == 'control': # for t1_hold, t2_hold trials
+        return _extract_control_extrema(pain_series, trial_type, reference_times, base_offset)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+def _extract_local_extrema(
+        pain_series: pd.Series, 
+        trial_type: str, 
+        base_offset: float
+        )-> Dict[str, float]:
+
+        # Define time windows
         time_windows = define_timewindows(trial_type, trial_definitions, base_offset)
         transition_time = time_windows['C'][0]  # Use the start of period C
+        # Define search windows
         window_start = transition_time - window_size
         window_end = transition_time + window_size
-        window_series = pain_series.loc[(pain_series.index >= window_start) & (pain_series.index <= window_end)]
+        c_window_end = transition_time + period_c_duration 
+
+        window_series = pain_series.loc[
+            (pain_series.index >= window_start) & 
+            (pain_series.index <= window_end)]
+        
         if window_series.empty:
-            return {x: np.nan for x in ['min_val', 'min_time', 'max_val', 'max_time', 'peak_to_peak', 'peak_to_peak_latency']}
-        extrema_mode = extrema_order_map.get(trial_type)
-        c_window_end = transition_time + 20  # 20 seconds after the transition time
-        if extrema_mode == ['min', 'max']:
+            return {x: np.nan for x in ['abs_min_val', 'abs_min_time', 'abs_max_val', 'abs_max_time', 'abs_peak_to_peak', 'abs_peak_to_peak_latency']}
+        
+        extrema_mode = trial_type_info[trial_type]['extrema_order']
+
+        if extrema_mode == ['min', 'max']:      # for 'inv' trials
             first_val = window_series.min()
             first_time = window_series.idxmin()
             after_first = pain_series.loc[(pain_series.index > first_time) & (pain_series.index <= c_window_end)]
@@ -146,7 +201,7 @@ def extract_extrema(
             second_time = after_first.idxmax()
             min_val, min_time = first_val, first_time
             max_val, max_time = second_val, second_time
-        elif extrema_mode == ['max', 'min']:
+        elif extrema_mode == ['max', 'min']:    # for 'offset' and 'stepdown' trials
             first_val = window_series.max()
             first_time = window_series.idxmax()
             after_first = pain_series.loc[(pain_series.index > first_time) & (pain_series.index <= c_window_end)]
@@ -156,55 +211,158 @@ def extract_extrema(
             min_val, min_time = second_val, second_time
         else:
             raise ValueError(f"Unknown extrema order for trial_type={trial_type}: {extrema_mode}")
+        
         peak_to_peak = abs(second_val - first_val) if not (np.isnan(second_val) or np.isnan(first_val)) else np.nan
         peak_to_peak_latency = second_time - first_time if not (np.isnan(second_time) or np.isnan(first_time)) else np.nan
+
         return {
-            'min_val': min_val, 'min_time': min_time,
-            'max_val': max_val, 'max_time': max_time,
-            'peak_to_peak': peak_to_peak,
-            'peak_to_peak_latency': peak_to_peak_latency
+            # Only return absolute values for experimental trials
+            'abs_min_val': min_val, 
+            'abs_min_time': min_time,
+            'abs_max_val': max_val, 
+            'abs_max_time': max_time,
+            'abs_peak_to_peak': peak_to_peak,
+            'abs_peak_to_peak_latency': peak_to_peak_latency
         }
-    elif mode == 'control':
-        if reference_times is None:
-            raise ValueError("reference_times must be provided when mode='control'")
-        min_time = reference_times.get('min_time', np.nan)
-        max_time = reference_times.get('max_time', np.nan)
+    
+def _extract_control_extrema(
+        pain_series: pd.Series, 
+        trial_type: str, 
+        reference_times: Dict[str, float], 
+        base_offset: float
+        ) -> Dict[str, float]:
+        """Extract time-yoked and absolute extrema for control trials"""
+
+        # Absolute maximum and subsequent minimum
+        abs_max_time = pain_series.idxmax()
+        abs_max_val = pain_series.max()
+
+        # Get period C boundaries
+        time_windows = define_timewindows(trial_type, trial_definitions, base_offset) 
+        c_start, c_end = time_windows['C']
+
+        # Find minimum after max within period C only
+        after_max_in_c = pain_series.loc[
+            (pain_series.index > abs_max_time) & 
+            (pain_series.index >= c_start) & 
+            (pain_series.index <= c_end)
+        ]
+        if not after_max_in_c.empty:
+            abs_min_val = after_max_in_c.min()
+            abs_min_time = after_max_in_c.idxmin()
+        else:
+            # Fallback: just find min in period C
+            period_c_data = pain_series.loc[
+                (pain_series.index >= c_start) & 
+                (pain_series.index <= c_end)
+            ]
+            if not period_c_data.empty:
+                abs_min_val = period_c_data.min()
+                abs_min_time = period_c_data.idxmin()
+            else:
+                abs_min_val = np.nan
+                abs_min_time = np.nan
+
+        # Extract reference time for time-yoked extrema 
+        ref_min_time = reference_times.get('abs_min_time', np.nan)
+        ref_max_time = reference_times.get('abs_max_time', np.nan)
+
         if not pain_series.empty:
             # Find the nearest index for min_time and max_time
             idx_array = np.array(pain_series.index)
-            if not np.isnan(min_time):
-                min_idx = np.argmin(np.abs(idx_array - min_time))
-                min_val = pain_series.iloc[min_idx]
+            if not np.isnan(ref_min_time):
+                min_idx = np.argmin(np.abs(idx_array - ref_min_time))
+                time_yoked_min_val = pain_series.iloc[min_idx]
             else:
-                min_val = np.nan
-            if not np.isnan(max_time):
-                max_idx = np.argmin(np.abs(idx_array - max_time))
-                max_val = pain_series.iloc[max_idx]
+                time_yoked_min_val = np.nan
+            if not np.isnan(ref_max_time):
+                max_idx = np.argmin(np.abs(idx_array - ref_max_time))
+                time_yoked_max_val = pain_series.iloc[max_idx]
             else:
-                max_val = np.nan
+                time_yoked_max_val = np.nan
         else:
-            min_val = np.nan
-            max_val = np.nan
-        peak_to_peak = abs(max_val - min_val) if not (np.isnan(max_val) or np.isnan(min_val)) else np.nan
-        peak_to_peak_latency = max_time - min_time if not (np.isnan(max_time) or np.isnan(min_time)) else np.nan
+            time_yoked_min_val = np.nan
+            time_yoked_max_val = np.nan
+
+        # Peak to peak for time-yoked extrema
+        time_yoked_peak_to_peak = abs(time_yoked_max_val - time_yoked_min_val) if not (
+            np.isnan(time_yoked_max_val) or np.isnan(time_yoked_min_val)) else np.nan
+        time_yoked_peak_to_peak_latency = ref_max_time - ref_min_time if not (
+            np.isnan(ref_max_time) or np.isnan(ref_min_time)) else np.nan
+
+        # Peak to peak for absolute extrema
+        abs_peak_to_peak = abs(abs_max_val - abs_min_val) if not (
+            np.isnan(abs_max_val) or np.isnan(abs_min_val)) else np.nan
+        abs_peak_to_peak_latency = abs_min_time - abs_max_time if not (
+            np.isnan(abs_min_time) or np.isnan(abs_max_time)) else np.nan
+
         return {
-            'min_val': min_val,
-            'max_val': max_val,
-            'peak_to_peak': peak_to_peak,
-            'peak_to_peak_latency': peak_to_peak_latency
+            # Time-yoked extrema
+            'time_yoked_min_val': time_yoked_min_val,
+            'time_yoked_max_val': time_yoked_max_val,
+            'time_yoked_min_time': ref_min_time,
+            'time_yoked_max_time': ref_max_time,
+            'time_yoked_peak_to_peak': time_yoked_peak_to_peak,
+            'time_yoked_peak_to_peak_latency': time_yoked_peak_to_peak_latency,
+
+            # Absolute extrema
+            'abs_min_val': abs_min_val,
+            'abs_min_time': abs_min_time,
+            'abs_max_val': abs_max_val,
+            'abs_max_time': abs_max_time,
+            'abs_peak_to_peak': abs_peak_to_peak,
+            'abs_peak_to_peak_latency': abs_peak_to_peak_latency
         }
 
+def calc_normalized_pain_change(row, use_time_yoked=True):
+    """
+    Calculate normalized pain change based on the trial type.
+    Parameters:
+        row: DataFrame row with trial metrics
+        use_time_yoked: If True, use time_yoked values for control trials;
+                        If False, use absolute values
+    Returns:
+        float: Normalized pain change percentage
+    """
+    tt = row['trial_type']
+    if tt in ['offset','stepdown']:
+        # For offset/stepdown trials: (min - max) / max * 100 
+        min_val = row.get('abs_min_val')
+        max_val = row.get('abs_max_val')
+        if pd.notnull(min_val) and pd.notnull(max_val) and max_val !=0:
+            return (min_val - max_val) / max_val * 100 
+    elif tt == 'inv':
+        # For inv trials: (max - min) / max * 100
+        min_val = row.get('abs_min_val')
+        max_val = row.get('abs_max_val')
+        if pd.notnull(min_val) and pd.notnull(max_val) and max_val !=0:
+            return (max_val - min_val) / max_val * 100
+    elif tt == 't1_hold':
+        # t1_hold references 'offset' ---- practically, I don't really care about stepdown trials yet 
+        if use_time_yoked:
+            min_val = row.get('time_yoked_min_val_offset')
+            max_val = row.get('time_yoked_max_val_offset')
+        else:
+            min_val = row.get('abs_min_val')
+            max_val = row.get('abs_max_val')
+        if pd.notnull(min_val) and pd.notnull(max_val) and max_val !=0:
+            return (min_val - max_val) / max_val * 100
+    elif tt == 't2_hold':
+        # t2_hold references 'inv'
+        if use_time_yoked:
+            min_val = row.get('time_yoked_min_val_inv')
+            max_val = row.get('time_yoked_max_val_inv')
+        else:
+            min_val = row.get('abs_min_val')
+            max_val = row.get('abs_max_val')
+        if pd.notnull(min_val) and pd.notnull(max_val) and max_val !=0:
+            return (max_val - min_val) / max_val * 100
+    return np.nan 
+
 #%%
-"""
-Section 3: Compute metrics for each trial and assemble into a DataFrame
-"""
-trial_type_info = {
-    'inv':      {'kind': 'stepped', 'extrema_order': ['min', 'max'], 'reference': None},
-    'offset':   {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
-    'stepdown': {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
-    't1_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['offset','stepdown']},
-    't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': 'inv'}
-}
+# ========================================================
+# METRICS EXTRACTION
+# ========================================================
 
 # Compute metrics for each individual trial
 trial_metrics_list = []
@@ -220,10 +378,10 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
     info = trial_type_info[trial_type]
     if info['kind'] == 'control':
         continue # skip control trials for now
-    extrema_order_map = {k: v['extrema_order'] for k, v in trial_type_info.items()}
+    trial_ramp_time = get_trial_ramp_time(trial_df)
     # Compute AUCs 
-    aucs = compute_aucs(pain_series, trial_type, trial_definitions)
-    time_windows = define_timewindows(trial_type, trial_definitions)
+    aucs = compute_aucs(pain_series, trial_type, trial_definitions, base_offset=trial_ramp_time)
+    time_windows = define_timewindows(trial_type, trial_definitions, base_offset=trial_ramp_time)
     time_window_record = {}
     for period in ['A', 'B', 'C']:
         start, end = time_windows[period]
@@ -232,11 +390,11 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
 
     # Compute extrema
     extrema = extract_extrema(
-        pain_series, trial_type, extrema_order_map, trial_definitions, mode='local')
+        pain_series, trial_type, mode='local', base_offset=trial_ramp_time)
     # Store extrema times for later use with control trials
     subject_extrema_times[(int(subject), str(trial_type), int(trial_num))] = {
-        'min_time': extrema['min_time'],
-        'max_time': extrema['max_time']
+        'abs_min_time': extrema['abs_min_time'],
+        'abs_max_time': extrema['abs_max_time']
     }
     record = {
     'subject': subject,
@@ -259,10 +417,10 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
     if info['kind'] != 'control':
         continue # skip stepped trials, already processed
 
-    extrema_order_map = {k: v['extrema_order'] for k, v in trial_type_info.items()}
     # Compute AUCs 
-    aucs = compute_aucs(pain_series, trial_type, trial_definitions)
-    time_windows = define_timewindows(trial_type, trial_definitions)
+    trial_ramp_time = get_trial_ramp_time(trial_df)
+    aucs = compute_aucs(pain_series, trial_type, trial_definitions, base_offset=trial_ramp_time)
+    time_windows = define_timewindows(trial_type, trial_definitions, base_offset=trial_ramp_time)
     time_window_record = {}
     for period in ['A', 'B', 'C']:
         start, end = time_windows[period]
@@ -270,7 +428,7 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
         time_window_record[f'{period}_end'] = end
     # Get reference times from the corresponding stepped trial
     references = info['reference']
-    if isinstance(references, list):
+    if isinstance(references, list):                # for t1_hold: multiple references
         extrema_dict = {}
         ref_trial_num_dict = {}
         for ref in references:
@@ -284,12 +442,24 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
                 ref_trial_num = ref_trial_nums[min_diff_idx]
             else:
                 ref_trial_num = np.nan
-            reference_times = subject_extrema_times.get((int(subject), str(ref), int(ref_trial_num)), {'min_time': np.nan, 'max_time': np.nan})
+                
+            reference_times = subject_extrema_times.get(
+                (int(subject), str(ref), int(ref_trial_num)), 
+                {'abs_min_time': np.nan, 'abs_max_time': np.nan})
             extrema = extract_extrema(
-                pain_series, trial_type, extrema_order_map, trial_definitions, mode='control', reference_times=reference_times)
+                pain_series, trial_type, mode='control', 
+                reference_times=reference_times, base_offset=trial_ramp_time)
+            
+            # Add reference suffix only to reference-dependent extrema
             for k, v in extrema.items():
-                extrema_dict[f"{k}_{ref}"] = v
+                if k.startswith('time_yoked_'): # only add suffix to time-yoked extrema
+                    extrema_dict[f"{k}_{ref}"] = v
+                else:                           # absolute extrema
+                    if k not in extrema_dict: 
+                        extrema_dict[k] = v # don't overwrite
+
             ref_trial_num_dict[f"reference_trial_num_{ref}"] = ref_trial_num
+
         record = {
             'subject': subject,
             'trial_num': trial_num,
@@ -300,8 +470,8 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
             **time_window_record
         }
         trial_metrics_list.append(record)
-    else:
-        # For t2_hold: just do the single reference
+
+    else:                                       # For t2_hold: just do the single reference
         ref = references
         ref_trials = df[(df['subject'] == subject) & (df['trial_type'] == ref)]
         if not ref_trials.empty:
@@ -311,44 +481,284 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
             ref_trial_num = ref_trial_nums[min_diff_idx]
         else:
             ref_trial_num = np.nan
-        reference_times = subject_extrema_times.get((int(subject), str(ref), int(ref_trial_num)), {'min_time': np.nan, 'max_time': np.nan})
+
+        reference_times = subject_extrema_times.get(
+            (int(subject), str(ref), int(ref_trial_num)), 
+            {'abs_min_time': np.nan, 'abs_max_time': np.nan})
+        
         extrema = extract_extrema(
-            pain_series, trial_type, extrema_order_map, trial_definitions, mode='control', reference_times=reference_times)
+            pain_series, trial_type, mode='control', 
+            reference_times=reference_times, base_offset=trial_ramp_time)
+        
+        extrema_dict = {}
+
+        # Add reference suffix only to reference-dependent extrema
+        for k, v in extrema.items():
+            if k.startswith('time_yoked_'): # only add suffix to time-yoked extrema
+                extrema_dict[f"{k}_{ref}"] = v
+            else:                           # absolute extrema
+                if k not in extrema_dict: 
+                    extrema_dict[k] = v # don't overwrite
+
         record = {
             'subject': int(subject),
             'trial_num': int(trial_num),
             'trial_type': trial_type,
             'reference_trial_num': ref_trial_num,
             **aucs,
-            **extrema,        
+            **extrema_dict,        
             **time_window_record
         }
         trial_metrics_list.append(record)
 
-def calc_normalized_pain_change(row):
-    tt = row['trial_type']
-    if tt in ['offset','stepdown']:
-        min_val = row['min_val']
-        max_val = row['max_val']
-        if pd.notnull(min_val) and pd.notnull(max_val) and max_val != 0:
-            return (min_val - max_val) / max_val * 100 
-    elif tt == 't1_hold':
-        min_val = row.get('min_val_offset', np.nan)
-        max_val = row.get('max_val_offset', np.nan)
-        if pd.notnull(min_val) and pd.notnull(max_val) and max_val != 0:
-            return (min_val - max_val) / max_val * 100
-    elif tt in ['inv', 't2_hold']:
-        min_val = row['min_val']
-        max_val = row['max_val']
-        if pd.notnull(min_val) and pd.notnull(max_val) and (100 - min_val) != 0:
-            return (max_val - min_val) / (100 - min_val) * 100
-    return np.nan # if no recognized trial_type or missing data 
 
-trial_metrics_df = pd.DataFrame(trial_metrics_list)
-trial_metrics_df['normalized_pain_change'] = trial_metrics_df.apply(calc_normalized_pain_change, axis=1)
-# Save the trial metrics DataFrame to a CSV file
-OUTPUT_PATH = '/userdata/ljohnston/TCE_analysis/data_from_ben/trial_metrics.csv'
-trial_metrics_df.to_csv(OUTPUT_PATH, index=False)
+# Calculate normalized pain changes
+for record in trial_metrics_list:
+    record['time_yoked_normalized_pain_change'] = calc_normalized_pain_change(record, use_time_yoked=True)
+    record['abs_normalized_pain_change'] = calc_normalized_pain_change(record, use_time_yoked=False)
+
+# Convert to serializable format and organize by subject
+structured_data = {}
+for record in trial_metrics_list:
+    subject = int(record['subject'])
+    trial_num = int(record['trial_num'])
+    
+    if subject not in structured_data:
+        structured_data[subject] = {}
+    
+    # Convert all values to JSON-serializable format
+    clean_record = {}
+    for key, value in record.items():
+        clean_record[key] = convert_to_serializable(value)
+    
+    structured_data[subject][trial_num] = clean_record
+
+# Save as JSON
+with open(OUTPUT_PATH, 'w') as f:
+    json.dump(structured_data, f, indent=2)
+
 print(f"Trial metrics saved to {OUTPUT_PATH}")
+
+# %%
+# ========================================================
+# TRIAL COMPARISON PLOTTING
+# ========================================================
+
+def plot_trial_comparison(structured_data, df, stepped_type, control_type, reference_suffix):
+    """
+    Plot comparison between stepped trial and its corresponding control trial.
+    
+    Args:
+        structured_data: Dictionary with trial metrics organized by subject/trial_num
+        df: DataFrame with raw trial data
+        stepped_type: 'offset' or 'inv'
+        control_type: 't1_hold' or 't2_hold'
+        reference_suffix: 'offset', 'inv', etc. for column naming
+    """
+    # Find subjects with both trial types
+    subjects_with_both = []
+    for subject_id, trials in structured_data.items():
+        trial_types = [trial['trial_type'] for trial in trials.values()]
+        has_stepped = stepped_type in trial_types
+        has_control = control_type in trial_types
+        if has_stepped and has_control:
+            subjects_with_both.append(subject_id)
+    
+    if not subjects_with_both:
+        print(f"No subjects found with both {stepped_type} and {control_type} trials!")
+        return
+    
+    # Pick random subject
+    subject = np.random.choice(subjects_with_both)
+    print(f"Selected subject: {subject}")
+    
+    # Get control trials for this subject
+    control_trials = []
+    for trial_num, trial_data in structured_data[subject].items():
+        if trial_data['trial_type'] == control_type:
+            control_trials.append((trial_num, trial_data))
+    
+    if len(control_trials) == 0:
+        print(f"No {control_type} trials found!")
+        return
+    
+    # Pick first control trial
+    control_trial_num, control_trial = control_trials[0]
+    
+    # Get reference column name
+    if control_type == 't1_hold':
+        ref_col = f'reference_trial_num_{reference_suffix}'
+    else:  # t2_hold
+        ref_col = 'reference_trial_num'
+    
+    referenced_stepped_num = control_trial.get(ref_col)
+    print(f"{control_type} trial {control_trial_num} references {stepped_type} trial {referenced_stepped_num}")
+    
+    if referenced_stepped_num is None or pd.isna(referenced_stepped_num):
+        print(f"{control_type} trial has no {stepped_type} reference!")
+        return
+    
+    # Find the referenced stepped trial
+    referenced_stepped_num = int(referenced_stepped_num)
+    if referenced_stepped_num not in structured_data[subject]:
+        print(f"Referenced {stepped_type} trial {referenced_stepped_num} not found!")
+        return
+    
+    stepped_trial = structured_data[subject][referenced_stepped_num]
+    if stepped_trial['trial_type'] != stepped_type:
+        print(f"Referenced trial {referenced_stepped_num} is not a {stepped_type} trial!")
+        return
+    
+    stepped_trial_num = referenced_stepped_num
+    
+    print(f"Found matching pair: {stepped_type} {stepped_trial_num} ↔ {control_type} {control_trial_num}")
+    
+    # Get time series data for both trials
+    stepped_data = df[(df['subject'] == subject) & 
+                     (df['trial_num'] == stepped_trial_num)].sort_values('aligned_time')
+    control_data = df[(df['subject'] == subject) & 
+                     (df['trial_num'] == control_trial_num)].sort_values('aligned_time')
+    
+    # Create subplot with shared x-axis
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    
+    # Function to plot a single trial
+    def plot_single_trial(ax, trial_data, trial_metrics, trial_name, is_stepped=True):
+        # Create twin axis for temperature
+        ax_temp = ax.twinx()
+        
+        # Plot pain on left axis (blue)
+        pain_line = ax.plot(trial_data['aligned_time'], trial_data['pain'], 
+                           color='blue', linewidth=2, label='Pain Rating')[0]
+        
+        # Plot temperature on right axis (red)
+        temp_line = ax_temp.plot(trial_data['aligned_time'], trial_data['temperature'], 
+                                color='red', alpha=0.7, linewidth=2, label='Temperature')[0]
+        
+        # Set axis limits and labels
+        ax.set_ylim(0, 100)
+        ax.set_ylabel('Pain Rating', color='blue')
+        ax.tick_params(axis='y', labelcolor='blue')
+        
+        ax_temp.set_ylim(29, 50)
+        ax_temp.set_ylabel('Temperature (°C)', color='red')
+        ax_temp.tick_params(axis='y', labelcolor='red')
+        
+        # Mark periods A, B, C
+        for period in ['A', 'B', 'C']:
+            start = trial_metrics[f'{period}_start']
+            end = trial_metrics[f'{period}_end']
+            ax.axvspan(start, end, color='gray', alpha=0.2, 
+                      label=f'Period {period}' if period == 'A' else "")
+        
+        if is_stepped:
+            # Mark local extrema for stepped trials (using abs_ values)
+            if trial_metrics.get('abs_min_time') is not None:
+                ax.axvline(trial_metrics['abs_min_time'], color='green', linestyle='--', 
+                          linewidth=2, label=f"Local Min ({trial_metrics['abs_min_val']:.1f})")
+                ax.plot(trial_metrics['abs_min_time'], trial_metrics['abs_min_val'], 
+                       'go', markersize=8)
+            
+            if trial_metrics.get('abs_max_time') is not None:
+                ax.axvline(trial_metrics['abs_max_time'], color='orange', linestyle='--', 
+                          linewidth=2, label=f"Local Max ({trial_metrics['abs_max_val']:.1f})")
+                ax.plot(trial_metrics['abs_max_time'], trial_metrics['abs_max_val'], 
+                       'o', color='orange', markersize=8)
+        else:
+            # Mark time-yoked extrema for control trials
+            min_time_col = f'time_yoked_min_time_{reference_suffix}'
+            min_val_col = f'time_yoked_min_val_{reference_suffix}'
+            max_time_col = f'time_yoked_max_time_{reference_suffix}'
+            max_val_col = f'time_yoked_max_val_{reference_suffix}'
+            
+            if trial_metrics.get(min_time_col) is not None:
+                ax.axvline(trial_metrics[min_time_col], color='green', 
+                          linestyle='--', linewidth=2, alpha=0.7,
+                          label=f"Time-yoked Min ({trial_metrics[min_val_col]:.1f})")
+                ax.plot(trial_metrics[min_time_col], trial_metrics[min_val_col], 
+                       'go', markersize=6, alpha=0.7)
+            
+            if trial_metrics.get(max_time_col) is not None:
+                ax.axvline(trial_metrics[max_time_col], color='orange', 
+                          linestyle='--', linewidth=2, alpha=0.7,
+                          label=f"Time-yoked Max ({trial_metrics[max_val_col]:.1f})")
+                ax.plot(trial_metrics[max_time_col], trial_metrics[max_val_col], 
+                       'o', color='orange', markersize=6, alpha=0.7)
+            
+            # Mark absolute extrema
+            if trial_metrics.get('abs_max_time') is not None:
+                ax.axvline(trial_metrics['abs_max_time'], color='purple', 
+                          linestyle='--', linewidth=2,
+                          label=f"True Max ({trial_metrics['abs_max_val']:.1f})")
+                ax.plot(trial_metrics['abs_max_time'], trial_metrics['abs_max_val'], 
+                       'rs', markersize=8)
+            
+            if trial_metrics.get('abs_min_time') is not None:
+                ax.axvline(trial_metrics['abs_min_time'], color='yellow', 
+                          linestyle='--', linewidth=2,
+                          label=f"True Min ({trial_metrics['abs_min_val']:.1f})")
+                ax.plot(trial_metrics['abs_min_time'], trial_metrics['abs_min_val'], 
+                       's', color='yellow', markersize=8)
+        
+        # Set title
+        ax.set_title(f'Subject {subject} - {trial_name}')
+        
+        # Create combined legend
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax_temp.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+        
+        ax.grid(True, alpha=0.3)
+    
+    # Plot both trials
+    plot_single_trial(ax1, stepped_data, stepped_trial, 
+                     f'{stepped_type.title()} Trial {stepped_trial_num}', is_stepped=True)
+    
+    plot_single_trial(ax2, control_data, control_trial, 
+                     f'{control_type.upper()} Trial {control_trial_num} (ref: {stepped_type} {stepped_trial_num})', 
+                     is_stepped=False)
+    
+    # Set shared x-label
+    ax2.set_xlabel('Aligned Time (s)')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary metrics
+    print(f"\n=== METRICS SUMMARY ===")
+    print(f"{stepped_type.upper()} TRIAL {stepped_trial_num}:")
+    print(f"  Local Min: {stepped_trial['abs_min_val']:.2f} at t={stepped_trial['abs_min_time']:.2f}s")
+    print(f"  Local Max: {stepped_trial['abs_max_val']:.2f} at t={stepped_trial['abs_max_time']:.2f}s")
+    print(f"  Peak-to-peak: {stepped_trial['abs_peak_to_peak']:.2f}")
+    print(f"  AUC Total: {stepped_trial['auc_total']:.2f}")
+    
+    print(f"\n{control_type.upper()} TRIAL {control_trial_num}:")
+    
+    # Print time-yoked metrics
+    min_val_col = f'time_yoked_min_val_{reference_suffix}'
+    max_val_col = f'time_yoked_max_val_{reference_suffix}'
+    min_time_col = f'time_yoked_min_time_{reference_suffix}'
+    max_time_col = f'time_yoked_max_time_{reference_suffix}'
+    pp_col = f'time_yoked_peak_to_peak_{reference_suffix}'
+    
+    if control_trial.get(min_val_col) is not None:
+        print(f"  Time-yoked Min: {control_trial[min_val_col]:.2f} at t={control_trial[min_time_col]:.2f}s")
+        print(f"  Time-yoked Max: {control_trial[max_val_col]:.2f} at t={control_trial[max_time_col]:.2f}s")
+        print(f"  Time-yoked Peak-to-peak: {control_trial[pp_col]:.2f}")
+    
+    if control_trial.get('abs_max_val') is not None:
+        print(f"  True Max: {control_trial['abs_max_val']:.2f} at t={control_trial['abs_max_time']:.2f}s")
+        print(f"  True Min: {control_trial['abs_min_val']:.2f} at t={control_trial['abs_min_time']:.2f}s")
+    
+    print(f"  AUC Total: {control_trial['auc_total']:.2f}")
+
+# Now use the function for both comparisons:
+print("=== OFFSET vs T1_HOLD COMPARISON ===")
+plot_trial_comparison(structured_data, df, 'offset', 't1_hold', 'offset')
+
+print("\n" + "="*50 + "\n")
+
+print("=== INV vs T2_HOLD COMPARISON ===")
+plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv')
 
 #%%

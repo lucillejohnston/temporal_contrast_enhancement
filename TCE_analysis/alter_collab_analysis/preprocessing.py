@@ -30,6 +30,7 @@ trial_key = {
     'CLEAR-B2': 't1_hold',
     'CLEAR-B3': 'stepdown'
 }
+trial_data['trial_type'] = trial_data['trial_type'].map(trial_key)
 #%%
 # Functions to process the data
 def resample_trials(trial_df, freq='100ms'):
@@ -331,18 +332,13 @@ aligned_dict = {
 trial_type_groups = {}
 for key, df in aligned_dict.items():
     # Get trial type from the dataframe
-    trial_type_name = df['trial_type'].dropna().iloc[0]
-    
-    # Map to readable name using trial_key dictionary
-    trial_type_mapped = trial_key.get(trial_type_name, trial_type_name)
-    
-    # Add to group
-    if trial_type_mapped not in trial_type_groups:
-        trial_type_groups[trial_type_mapped] = []
-    trial_type_groups[trial_type_mapped].append(df)
+    trial_type = df['trial_type'].dropna().iloc[0]
+    if trial_type not in trial_type_groups:
+        trial_type_groups[trial_type] = []
+    trial_type_groups[trial_type].append(df)
 
 # Plot separate figures for each trial type
-for trial_type_name, dfs in trial_type_groups.items():
+for trial_type, dfs in trial_type_groups.items():
     plt.figure(figsize=(10, 6))
     for df in dfs:
         plt.plot(df.index, df['temperature'], alpha=0.5)
@@ -350,7 +346,7 @@ for trial_type_name, dfs in trial_type_groups.items():
     plt.ylabel("Temperature (°C)")
     plt.xlim(-15, 60)
     plt.axvline(x=0, color='red', linestyle='--', linewidth=2, alpha=0.5, label='Rise Onset (t=0)')
-    plt.title(f"Time-Aligned Temperature Curves: {trial_type_name}")
+    plt.title(f"Time-Aligned Temperature Curves: {trial_type}")
     plt.legend()
     plt.grid(True)
     plt.show()
@@ -366,6 +362,7 @@ for key, df in aligned_dict.items():
 
 cleaned_aligned_df = pd.concat(dfs_with_time, ignore_index=True)
 
+
 #%%
 columns_to_save = [
     'subject', 'trial_num', 'trial_type', 'temperature', 'pain',
@@ -376,7 +373,7 @@ print(cleaned_aligned_df.head())
 print(cleaned_aligned_df.columns)
 # Save the cleaned and aligned DataFrame to a JSON file
 cleaned_aligned_df.to_json(
-    '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/trial_data_cleaned_aligned.json',
+    '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_cleaned_aligned.json',
     orient='records',
     date_format='iso'
 )
@@ -462,7 +459,7 @@ print(f"   Average points per trial: {len(data_df_preprocessed) / len(data_df_pr
 
 # Save preprocessed data to JSON
 data_df_preprocessed.to_json(
-    '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/trial_data_trimmed_downsampled.json',
+    '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_trimmed_downsampled.json',
     orient='records',
     date_format='iso'
 )
