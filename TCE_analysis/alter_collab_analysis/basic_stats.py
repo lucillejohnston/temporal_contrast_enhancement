@@ -1,117 +1,184 @@
 #%%
-"""
-Section 1: Load the data and import relevant packages
-"""
+# ========================================================
+# CONFIGURATION
+# ========================================================
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-import sys, os
-import scipy.stats as stats
-sys.path.append('/userdata/ljohnston/TCE_analysis/data_from_ben')
+import sys, os, json
+from scipy import stats
 from plotting_functions import *  
 
 # File paths
-TRIAL_METRICS_PATH = '/userdata/ljohnston/TCE_analysis/data_from_ben/trial_metrics.csv'
-TRIAL_DATA_PATH = '/userdata/ljohnston/TCE_analysis/data_from_ben/trial_data_cleaned_aligned.json'
+TRIAL_METRICS_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_metrics.json'
+TRIAL_DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_cleaned_aligned.json'
 
 # Load the metrics data
-trial_metrics_df = pd.read_csv(TRIAL_METRICS_PATH)
+with open(TRIAL_METRICS_PATH, 'r') as f:
+    metrics_data = json.load(f)
 
-# Load the raw trial data (for time series plotting)
-df = pd.read_json(TRIAL_DATA_PATH, orient='records')
+with open(TRIAL_DATA_PATH, 'r') as f:
+    time_series_trial_data = json.load(f)
+
+# Convert to DataFrame
+trial_metrics_df = {}
+records = []
+for subject_id, trials in metrics_data.items():
+    for trial_num, trial_data in trials.items():
+        record = {
+            'subject': int(subject_id),
+            'trial_num': int(trial_num),
+            **trial_data
+        }
+        records.append(record)
+
+# Convert to DataFrame
+trial_metrics_df = pd.DataFrame(records)
+time_series_df = pd.DataFrame(time_series_trial_data)
+
 #%%
-"""
-Section 2: Visualize metrics for each trial type
-"""
-# Define colors for windows
-window_colors = {'A': '#e0f7fa', 'B': '#ffe0b2', 'C': '#e1bee7'}
-auc_colors = {'A': '#00bcd4', 'B': '#ff9800', 'C': '#8e24aa'}
+# ============================================================================
+# Compare Metrics to Each Other 
+# auc_total vs max_val; 
+# abs_max_val vs time_yoked_max_val; 
+# abs_normalized_pain_change vs time_yoked_abs_normalized_pain_change)
+# ============================================================================
 
-# Get one example trial per trial_type
-example_trials = (
-    trial_metrics_df
-    .sort_values('trial_num')
-    .groupby('trial_type')
-    .apply(lambda x: x.sample(1, random_state=None)) # pick a random trial
-    .reset_index(drop=True)
+############################################################################################### Overall distributions of auc_total and abs_max_val
+# Plot histrograms of auc_total for all trial_types
+plt.figure(figsize=(10, 6))
+ax = sns.histplot(
+    data=trial_metrics_df,
+    x='auc_total',
+    hue='trial_type',
+    multiple='stack',
+    bins=30,
+    kde=True
+)
+plt.title('Distribution of AUC Total by Trial Type')
+plt.xlabel('AUC Total')
+plt.ylabel('Frequency')
+plt.tight_layout()
+plt.show()
+
+# Plot histrograms of abs_max_val for all trial_types
+plt.figure(figsize=(10, 6))
+ax = sns.histplot(
+    data=trial_metrics_df,
+    x='abs_max_val',
+    hue='trial_type',
+    multiple='stack',
+    bins=30,
+    kde=True    
+)
+plt.title("Distribution of Absolute Max Val by Trial Type")
+plt.xlabel('Absolute Max Val')
+plt.ylabel('Frequency')
+plt.tight_layout()
+plt.show()
+
+# Scatter plot: auc_total vs. abs_max_val for all trials
+create_correlation_scatter(
+    trial_metrics_df,
+    x_col='auc_total',
+    y_col='abs_max_val',
+    title='AUC Total vs. Absolute Max Val for All Trials',
+    xlabel='AUC Total',
+    ylabel='Absolute Max Val'
 )
 
-for _, row in example_trials.iterrows():
-    subject = row['subject']
-    trial_num = row['trial_num']
-    trial_type = row['trial_type']
-    trial_df = df[(df['subject'] == subject) & (df['trial_num'] == trial_num)]
-    pain_series = pd.Series(trial_df['pain'].values, index=trial_df['aligned_time'].values)
-    temp_series = pd.Series(trial_df['temperature'].values, index=trial_df['aligned_time'].values)
-    
-    # Extract time windows from trial_metrics_df
-    time_windows = {
-        period: (row[f"{period}_start"], row[f"{period}_end"])
-        for period in ['A', 'B', 'C']
-        if f"{period}_start" in row and f"{period}_end" in row
-    }
+########################################################################################## Compare abs_max_val and time_yoked_max_val for control trials
+control_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(['t1_hold', 't2_hold'])].copy()
+# Create temporary DataFrame for max values
+temp_max_df = pd.DataFrame({
+    'time_yoked_max_combined': pd.concat([
+        control_trials['time_yoked_max_val_offset'], 
+        control_trials['time_yoked_max_val_inv']
+    ]).dropna(),
+    'abs_max_combined': pd.concat([
+        control_trials.loc[control_trials['time_yoked_max_val_offset'].notna(), 'abs_max_val'],
+        control_trials.loc[control_trials['time_yoked_max_val_inv'].notna(), 'abs_max_val']
+    ])
+}).reset_index(drop=True)
 
-    fig, ax1 = plt.subplots(figsize=(12, 5))
-    # Temperature on left y-axis
-    ax1.plot(temp_series.index, temp_series.values, label='Temperature', color='gray', alpha=0.7)
-    ax1.set_xlabel("Aligned Time (s)")
-    ax1.set_ylabel("Temperature (°C)", color='gray')
-    ax1.tick_params(axis='y', labelcolor='gray')
-    # Shade time windows on ax1
-    # for period in ['A', 'B', 'C']:
-    #     if period in time_windows:
-    #         start, end = time_windows[period]
-    #         ax1.axvspan(start, end, color=window_colors[period], alpha=0.4, label=f'Window {period}' if period == 'A' else None)
-    # Pain on right y-axis
-    ax2 = ax1.twinx()
-    ax2.plot(pain_series.index, pain_series.values, label='Pain', color='crimson', lw=2)
-    ax2.set_ylabel("Pain Rating", color='crimson')
-    ax2.tick_params(axis='y', labelcolor='crimson')
-    
-    # Overlay AUCs and annotate on ax2
-    # for period in ['A', 'B', 'C']:
-    #     start, end = time_windows[period]
-    #     window_mask = (pain_series.index >= start) & (pain_series.index <= end)
-    #     ax2.fill_between(
-    #         pain_series.index[window_mask],
-    #         0,
-    #         pain_series[window_mask],
-    #         color=auc_colors[period],
-    #         alpha=0.5,
-    #         label=f'AUC {period}' if period=='A' else None
-    #     )
-    #     auc_val = row[f'auc_{period}']
-    #     mid = (start + end) / 2
-    #     y_pos = pain_series[window_mask].max() * 0.8 if window_mask.any() else 0
-    #     ax2.text(mid, y_pos, f"AUC {period}={auc_val:.1f}", color=auc_colors[period], ha='center', va='center', fontsize=10, fontweight='bold')
-    # Mark min and max pain
-    min_val = row['min_val']
-    min_time = row['min_time']
-    max_val = row['max_val']
-    max_time = row['max_time']
-    ax2.scatter([min_time, max_time], [min_val, max_val], color='black', zorder=5, s=60, label='Peaks')
-    ax2.text(min_time, min_val, f"Min Value", color='black', fontsize=10, fontweight='bold', ha='right', va='bottom')
-    ax2.text(max_time, max_val, f"Max Value", color='black', fontsize=10, fontweight='bold', ha='left', va='bottom')
-    # # Draw peak-to-peak line
-    # ax2.plot([min_time, max_time], [min_val, max_val], color='black', linestyle='--', lw=2, label='Peak-to-peak')
-    # # Annotate peak-to-peak value
-    # mid_time = (min_time + max_time) / 2
-    # mid_val = (min_val + max_val) / 2
-    # ax2.text(mid_time, mid_val, f"Δ={max_val-min_val:.1f}", color='black', fontsize=10, fontweight='bold', ha='center', va='bottom')
-    
-    plt.xlim(-1,31)
-    plt.title(f"Example {trial_type} (Subject {subject}, Trial {trial_num})")
-    plt.savefig(f"example_{trial_type}_min_max.svg", dpi=300)
-    fig.tight_layout()
-    plt.show()
+create_correlation_scatter(
+    temp_max_df, 
+    x_col='time_yoked_max_combined', 
+    y_col='abs_max_combined',
+    title='Control Trials: Absolute Max Val vs. Time-Yoked Max Val',
+    xlabel='Time-Yoked Max Val',
+    ylabel='Absolute Max Val'
+)
 
-# %% 
-"""
-Section 3: Descriptive statistics and comparisons 
-Replicating figures from the paper
-"""
-from scipy.stats import ttest_rel
+# Create temporary DataFrame for min values
+temp_min_df = pd.DataFrame({
+    'time_yoked_min_combined': pd.concat([
+        control_trials['time_yoked_min_val_offset'], 
+        control_trials['time_yoked_min_val_inv']
+    ]).dropna(),
+    'abs_min_combined': pd.concat([
+        control_trials.loc[control_trials['time_yoked_min_val_offset'].notna(), 'abs_min_val'],
+        control_trials.loc[control_trials['time_yoked_min_val_inv'].notna(), 'abs_min_val']
+    ])
+}).reset_index(drop=True)
+
+create_correlation_scatter(
+    temp_min_df,
+    x_col='time_yoked_min_combined',  
+    y_col='abs_min_combined',  
+    title='Control Trials: Absolute Min Val vs. Time-Yoked Min Val',
+    xlabel='Time-Yoked Min Val',
+    ylabel='Absolute Min Val'
+)
+
+############################################################################################ Compare abs_normalized_pain_change and time_yoked_normalized_pain_change for control trials
+# Separate t1_hold and t2_hold trials
+t1_hold_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 't1_hold'].copy()
+t2_hold_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 't2_hold'].copy()
+
+# Compare time-yoked vs absolute normalized pain change for t1_hold trials
+create_correlation_scatter(
+    t1_hold_trials,
+    x_col='time_yoked_normalized_pain_change',
+    y_col='abs_normalized_pain_change',
+    title='T1_Hold Trials: Time-Yoked vs Absolute Normalized Pain Change',
+    xlabel='Time-Yoked Normalized Pain Change (%)',
+    ylabel='Absolute Normalized Pain Change (%)'
+)
+
+# Compare time-yoked vs absolute normalized pain change for t2_hold trials
+create_correlation_scatter(
+    t2_hold_trials,
+    x_col='time_yoked_normalized_pain_change',
+    y_col='abs_normalized_pain_change',
+    title='T2_Hold Trials: Time-Yoked vs Absolute Normalized Pain Change',
+    xlabel='Time-Yoked Normalized Pain Change (%)',
+    ylabel='Absolute Normalized Pain Change (%)'
+)
+# Plot them together because it looks cute
+plt.figure(figsize=(10, 8))
+for trial_type, color in [('t1_hold', 'blue'), ('t2_hold', 'red')]:
+    subset = control_trials[control_trials['trial_type'] == trial_type]
+    mask = subset['time_yoked_normalized_pain_change'].notnull() & subset['abs_normalized_pain_change'].notnull()
+    x = subset.loc[mask, 'time_yoked_normalized_pain_change']
+    y = subset.loc[mask, 'abs_normalized_pain_change']
+    
+    plt.scatter(x, y, alpha=0.7, label=trial_type, color=color)
+
+plt.xlabel('Time-Yoked Normalized Pain Change (%)')
+plt.ylabel('Absolute Normalized Pain Change (%)')
+plt.title('Control Trials: Time-Yoked vs Absolute Normalized Pain Change')
+plt.legend()
+plt.xlim(-150, 150)
+plt.grid(True, alpha=0.3)
+plt.show()
+
+#%%
+# ============================================================================
+# Sanity Check: Replicate figures from the paper
+# ============================================================================
+
 from statsmodels.stats.weightstats import DescrStatsW
 
 def mean_ci(data):
@@ -126,87 +193,48 @@ comparisons = [
     ('t1_hold', 'offset', 'min_val', 'Min Value: t1_hold vs. offset', (0, 40)),
     ('t1_hold', 'stepdown', 'min_val', 'Min Value: t1_hold vs. stepdown', (0, 40)),
 ]
+####################################################################################### Compare t1_hold vs offset/stepdown and t2_hold vs inv for max and min values
 for trial1, trial2, metric, label, ylims in comparisons:
-    df1 = trial_metrics_df[trial_metrics_df['trial_type'] == trial1]
-    df2 = trial_metrics_df[trial_metrics_df['trial_type'] == trial2]
+    df1 = trial_metrics_df[trial_metrics_df['trial_type'] == trial1].copy()
+    df2 = trial_metrics_df[trial_metrics_df['trial_type'] == trial2].copy()
+
     common_subjects = set(df1['subject']) & set(df2['subject'])
     df1 = df1[df1['subject'].isin(common_subjects)].groupby('subject').mean(numeric_only=True)
     df2 = df2[df2['subject'].isin(common_subjects)].groupby('subject').mean(numeric_only=True)
-    # Adjust metric for t1_hold comparisons
-    if trial1 == 't1_hold' and trial2 in ['offset', 'stepdown']:
-        metric1 = f"{metric}_{trial2}"
-        vals1 = df1[metric1]
-        vals2 = df2[metric]
-    else:
-        vals1 = df1[metric]
-        vals2 = df2[metric]
+    
+    # Build metric names based on trial type
+    if trial1 in ['t1_hold', 't2_hold']:  # Control trials
+        if trial1 == 't1_hold' and trial2 in ['offset', 'stepdown']:
+            metric1 = f'time_yoked_{metric}_{trial2}'  # e.g., 'time_yoked_min_val_offset'
+        elif trial1 == 't2_hold' and trial2 == 'inv':
+            metric1 = f'time_yoked_{metric}_inv'       # e.g., 'time_yoked_max_val_inv'
+    
+    if trial2 in ['offset', 'stepdown', 'inv']:  # Stepped trials
+        metric2 = f'abs_{metric}'  # e.g., 'abs_min_val' or 'abs_max_val'
+    
+    vals1 = df1[metric1]
+    vals2 = df2[metric2]
+    
     data = pd.DataFrame({trial1: vals1, trial2: vals2}).dropna()
     means = [data[trial1].mean(), data[trial2].mean()]
     cis = [mean_ci(data[trial1]), mean_ci(data[trial2])]
     errors = [[m - ci[1], ci[2] - m] for m, ci in zip(means, cis)]
+    
     # Paired t-test
-    tstat, pval = ttest_rel(data[trial1], data[trial2])
+    tstat, pval = stats.ttest_rel(data[trial1], data[trial2])
     print(f"{label}: n={len(data)} subjects, t={tstat:.3f}, p={pval:.4f}")
+    
     # Barplot
     plt.figure(figsize=(6, 5))
     plt.bar([0, 1], means, yerr=np.array(errors).T, capsize=8, color=['#4F81BD', '#C0504D'])
     plt.xticks([0, 1], [trial1, trial2])
-    plt.ylabel(metric)
+    plt.ylabel('Pain Rating')
     plt.title(f"{label}\n(p={pval:.4f})")
-    if ylims[0] is not None or ylims[1] is not None:
+    if ylims and (ylims[0] is not None or ylims[1] is not None):
         plt.ylim(ylims)
     plt.tight_layout()
     plt.show()
 
-# Compute the average pain and its SEM for each timepoint for offset and t1_hold trials
-fig, ax = plt.subplots(figsize=(6, 6))
-for ttype, color in zip(['offset', 't1_hold'], ['#4F81BD', '#C0504D']):
-    # Filter the raw trial data for the given trial type
-    df_type = df[df['trial_type'] == ttype]
-    # Group by aligned_time and compute mean and standard error of the mean (SEM)
-    grouped = df_type.groupby('aligned_time')['pain']
-    mean_pain = grouped.mean()
-    sem_pain = grouped.std() / np.sqrt(grouped.count())
-    
-    # Plot the mean pain curve with error bands
-    ax.plot(mean_pain.index, mean_pain.values, label=ttype, color=color)
-    ax.fill_between(mean_pain.index,
-                    mean_pain - sem_pain,
-                    mean_pain + sem_pain,
-                    color=color,
-                    alpha=0.3)
-    ax.set_xlabel("Aligned Time (s)")
-    ax.set_ylabel("Pain")
-    ax.set_title("Average Pain Curves with SEM for Offset and T1 Hold Trials")
-    ax.legend()
-    plt.tight_layout()
-    plt.xlim(0, 25)  # Adjust x-axis limits to match the trial time range
-    plt.ylim(10,70)
-plt.savefig('/userdata/ljohnston/TCE_analysis/data_from_ben/offset_vs_t1_hold.svg', dpi=300)
-plt.show()
-
-fig, ax = plt.subplots(figsize=(6, 6))
-for ttype, color in zip(['inv','t2_hold'], ['#4F81BD', '#C0504D']):
-    df_type = df[df['trial_type'] == ttype]
-    grouped = df_type.groupby('aligned_time')['pain']
-    mean_pain = grouped.mean()
-    sem_pain = grouped.std() / np.sqrt(grouped.count())
-
-    ax.plot(mean_pain.index, mean_pain.values, label=ttype, color=color)
-    ax.fill_between(mean_pain.index,
-                    mean_pain - sem_pain,
-                    mean_pain + sem_pain,
-                    color=color,
-                    alpha=0.3)
-    ax.set_xlabel("Aligned Time (s)")
-    ax.set_ylabel("Pain")
-    ax.set_title("Average Pain Curves with SEM for Inv and T2 Hold Trials")
-    ax.legend()
-    plt.tight_layout()
-    plt.xlim(0, 25)  # Adjust x-axis limits to match the trial time range
-    plt.ylim(10,70)
-plt.savefig('/userdata/ljohnston/TCE_analysis/data_from_ben/inv_vs_t2_hold.svg', dpi=300)
-plt.show()
 
 # %%
 """Section 4: Plotting metrics across trials per subject within a session

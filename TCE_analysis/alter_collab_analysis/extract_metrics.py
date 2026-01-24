@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import json
 from typing import Dict, List, Tuple, Any, Optional
+from plotting_functions import *
 
 # =========================================================
 # CONFIGURATION
@@ -84,6 +85,81 @@ def get_trial_ramp_time(trial_df, default_ramp_time=15.0):
         return stable_time
     else:
         return default_ramp_time
+    
+
+# Filter calibration trials matching T1 hold temperature
+import numpy as np
+from scipy.spatial.distance import euclidean
+
+def find_matching_calibration_trials(calibration_trials, t1_hold_trials, temp_tolerance=1.0):
+    """
+    Find calibration trials that match T1 hold temperature profiles.
+    
+    Parameters:
+    -----------
+    calibration_trials : list of DataFrames
+        Calibration trial data
+    t1_hold_trials : list of DataFrames
+        T1 hold trial data
+    temp_tolerance : float
+        Maximum temperature difference (°C) to consider a match
+    
+    Returns:
+    --------
+    matched_calibration : list of DataFrames
+        Calibration trials matching T1 hold temperature profiles
+    """
+    matched_calibration = []
+    
+    # Get T1 hold temperature range for each subject
+    t1_hold_temps = {}
+    for df in t1_hold_trials:
+        subject = df['subject'].iloc[0]
+        max_temp = df['temperature'].max()
+        if subject not in t1_hold_temps:
+            t1_hold_temps[subject] = []
+        t1_hold_temps[subject].append(max_temp)
+    
+    # Average T1 hold temperature per subject
+    t1_hold_avg_temps = {subj: np.mean(temps) for subj, temps in t1_hold_temps.items()}
+    
+    print("\n=== T1 HOLD TEMPERATURE TARGETS ===")
+    for subject, temp in t1_hold_avg_temps.items():
+        print(f"Subject {subject}: {temp:.1f}°C")
+    
+    # Filter calibration trials
+    print("\n=== MATCHING CALIBRATION TRIALS ===")
+    for df in calibration_trials:
+        subject = df['subject'].iloc[0]
+        trial_num = df['trial_num'].iloc[0] if 'trial_num' in df.columns else 'unknown'
+        cal_max_temp = df['temperature'].max()
+        
+        if subject in t1_hold_avg_temps:
+            target_temp = t1_hold_avg_temps[subject]
+            temp_diff = abs(cal_max_temp - target_temp)
+            
+            if temp_diff <= temp_tolerance:
+                matched_calibration.append(df)
+                print(f"✓ Subject {subject}, Trial {trial_num}: {cal_max_temp:.1f}°C (diff: {temp_diff:.1f}°C)")
+            else:
+                print(f"✗ Subject {subject}, Trial {trial_num}: {cal_max_temp:.1f}°C (diff: {temp_diff:.1f}°C) - excluded")
+    
+    print(f"\n=== SUMMARY ===")
+    print(f"Total calibration trials: {len(calibration_trials)}")
+    print(f"Matched calibration trials: {len(matched_calibration)}")
+    
+    return matched_calibration
+
+# First, get the calibration and t1_hold trials
+calibration_trials = time_temp_aligned_trial_type.get('calibration', [])
+t1_hold_trials = time_temp_aligned_trial_type.get('t1_hold', [])
+
+# Apply the filter
+matched_calibration = find_matching_calibration_trials(
+    calibration_trials, 
+    t1_hold_trials, 
+    temp_tolerance=0.1  # Within 1°C
+)
 
 # Time Window and AUC Functions
 def define_timewindows(trial_type, trial_definitions, base_offset):
@@ -544,221 +620,10 @@ print(f"Trial metrics saved to {OUTPUT_PATH}")
 # TRIAL COMPARISON PLOTTING
 # ========================================================
 
-def plot_trial_comparison(structured_data, df, stepped_type, control_type, reference_suffix):
-    """
-    Plot comparison between stepped trial and its corresponding control trial.
-    
-    Args:
-        structured_data: Dictionary with trial metrics organized by subject/trial_num
-        df: DataFrame with raw trial data
-        stepped_type: 'offset' or 'inv'
-        control_type: 't1_hold' or 't2_hold'
-        reference_suffix: 'offset', 'inv', etc. for column naming
-    """
-    # Find subjects with both trial types
-    subjects_with_both = []
-    for subject_id, trials in structured_data.items():
-        trial_types = [trial['trial_type'] for trial in trials.values()]
-        has_stepped = stepped_type in trial_types
-        has_control = control_type in trial_types
-        if has_stepped and has_control:
-            subjects_with_both.append(subject_id)
-    
-    if not subjects_with_both:
-        print(f"No subjects found with both {stepped_type} and {control_type} trials!")
-        return
-    
-    # Pick random subject
-    subject = np.random.choice(subjects_with_both)
-    print(f"Selected subject: {subject}")
-    
-    # Get control trials for this subject
-    control_trials = []
-    for trial_num, trial_data in structured_data[subject].items():
-        if trial_data['trial_type'] == control_type:
-            control_trials.append((trial_num, trial_data))
-    
-    if len(control_trials) == 0:
-        print(f"No {control_type} trials found!")
-        return
-    
-    # Pick first control trial
-    control_trial_num, control_trial = control_trials[0]
-    
-    # Get reference column name
-    if control_type == 't1_hold':
-        ref_col = f'reference_trial_num_{reference_suffix}'
-    else:  # t2_hold
-        ref_col = 'reference_trial_num'
-    
-    referenced_stepped_num = control_trial.get(ref_col)
-    print(f"{control_type} trial {control_trial_num} references {stepped_type} trial {referenced_stepped_num}")
-    
-    if referenced_stepped_num is None or pd.isna(referenced_stepped_num):
-        print(f"{control_type} trial has no {stepped_type} reference!")
-        return
-    
-    # Find the referenced stepped trial
-    referenced_stepped_num = int(referenced_stepped_num)
-    if referenced_stepped_num not in structured_data[subject]:
-        print(f"Referenced {stepped_type} trial {referenced_stepped_num} not found!")
-        return
-    
-    stepped_trial = structured_data[subject][referenced_stepped_num]
-    if stepped_trial['trial_type'] != stepped_type:
-        print(f"Referenced trial {referenced_stepped_num} is not a {stepped_type} trial!")
-        return
-    
-    stepped_trial_num = referenced_stepped_num
-    
-    print(f"Found matching pair: {stepped_type} {stepped_trial_num} ↔ {control_type} {control_trial_num}")
-    
-    # Get time series data for both trials
-    stepped_data = df[(df['subject'] == subject) & 
-                     (df['trial_num'] == stepped_trial_num)].sort_values('aligned_time')
-    control_data = df[(df['subject'] == subject) & 
-                     (df['trial_num'] == control_trial_num)].sort_values('aligned_time')
-    
-    # Create subplot with shared x-axis
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
-    
-    # Function to plot a single trial
-    def plot_single_trial(ax, trial_data, trial_metrics, trial_name, is_stepped=True):
-        # Create twin axis for temperature
-        ax_temp = ax.twinx()
-        
-        # Plot pain on left axis (blue)
-        pain_line = ax.plot(trial_data['aligned_time'], trial_data['pain'], 
-                           color='blue', linewidth=2, label='Pain Rating')[0]
-        
-        # Plot temperature on right axis (red)
-        temp_line = ax_temp.plot(trial_data['aligned_time'], trial_data['temperature'], 
-                                color='red', alpha=0.7, linewidth=2, label='Temperature')[0]
-        
-        # Set axis limits and labels
-        ax.set_ylim(0, 100)
-        ax.set_ylabel('Pain Rating', color='blue')
-        ax.tick_params(axis='y', labelcolor='blue')
-        
-        ax_temp.set_ylim(29, 50)
-        ax_temp.set_ylabel('Temperature (°C)', color='red')
-        ax_temp.tick_params(axis='y', labelcolor='red')
-        
-        # Mark periods A, B, C
-        for period in ['A', 'B', 'C']:
-            start = trial_metrics[f'{period}_start']
-            end = trial_metrics[f'{period}_end']
-            ax.axvspan(start, end, color='gray', alpha=0.2, 
-                      label=f'Period {period}' if period == 'A' else "")
-        
-        if is_stepped:
-            # Mark local extrema for stepped trials (using abs_ values)
-            if trial_metrics.get('abs_min_time') is not None:
-                ax.axvline(trial_metrics['abs_min_time'], color='green', linestyle='--', 
-                          linewidth=2, label=f"Local Min ({trial_metrics['abs_min_val']:.1f})")
-                ax.plot(trial_metrics['abs_min_time'], trial_metrics['abs_min_val'], 
-                       'go', markersize=8)
-            
-            if trial_metrics.get('abs_max_time') is not None:
-                ax.axvline(trial_metrics['abs_max_time'], color='orange', linestyle='--', 
-                          linewidth=2, label=f"Local Max ({trial_metrics['abs_max_val']:.1f})")
-                ax.plot(trial_metrics['abs_max_time'], trial_metrics['abs_max_val'], 
-                       'o', color='orange', markersize=8)
-        else:
-            # Mark time-yoked extrema for control trials
-            min_time_col = f'time_yoked_min_time_{reference_suffix}'
-            min_val_col = f'time_yoked_min_val_{reference_suffix}'
-            max_time_col = f'time_yoked_max_time_{reference_suffix}'
-            max_val_col = f'time_yoked_max_val_{reference_suffix}'
-            
-            if trial_metrics.get(min_time_col) is not None:
-                ax.axvline(trial_metrics[min_time_col], color='green', 
-                          linestyle='--', linewidth=2, alpha=0.7,
-                          label=f"Time-yoked Min ({trial_metrics[min_val_col]:.1f})")
-                ax.plot(trial_metrics[min_time_col], trial_metrics[min_val_col], 
-                       'go', markersize=6, alpha=0.7)
-            
-            if trial_metrics.get(max_time_col) is not None:
-                ax.axvline(trial_metrics[max_time_col], color='orange', 
-                          linestyle='--', linewidth=2, alpha=0.7,
-                          label=f"Time-yoked Max ({trial_metrics[max_val_col]:.1f})")
-                ax.plot(trial_metrics[max_time_col], trial_metrics[max_val_col], 
-                       'o', color='orange', markersize=6, alpha=0.7)
-            
-            # Mark absolute extrema
-            if trial_metrics.get('abs_max_time') is not None:
-                ax.axvline(trial_metrics['abs_max_time'], color='purple', 
-                          linestyle='--', linewidth=2,
-                          label=f"True Max ({trial_metrics['abs_max_val']:.1f})")
-                ax.plot(trial_metrics['abs_max_time'], trial_metrics['abs_max_val'], 
-                       'rs', markersize=8)
-            
-            if trial_metrics.get('abs_min_time') is not None:
-                ax.axvline(trial_metrics['abs_min_time'], color='yellow', 
-                          linestyle='--', linewidth=2,
-                          label=f"True Min ({trial_metrics['abs_min_val']:.1f})")
-                ax.plot(trial_metrics['abs_min_time'], trial_metrics['abs_min_val'], 
-                       's', color='yellow', markersize=8)
-        
-        # Set title
-        ax.set_title(f'Subject {subject} - {trial_name}')
-        
-        # Create combined legend
-        lines1, labels1 = ax.get_legend_handles_labels()
-        lines2, labels2 = ax_temp.get_legend_handles_labels()
-        ax.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
-        
-        ax.grid(True, alpha=0.3)
-    
-    # Plot both trials
-    plot_single_trial(ax1, stepped_data, stepped_trial, 
-                     f'{stepped_type.title()} Trial {stepped_trial_num}', is_stepped=True)
-    
-    plot_single_trial(ax2, control_data, control_trial, 
-                     f'{control_type.upper()} Trial {control_trial_num} (ref: {stepped_type} {stepped_trial_num})', 
-                     is_stepped=False)
-    
-    # Set shared x-label
-    ax2.set_xlabel('Aligned Time (s)')
-    
-    plt.tight_layout()
-    plt.show()
-    
-    # Print summary metrics
-    print(f"\n=== METRICS SUMMARY ===")
-    print(f"{stepped_type.upper()} TRIAL {stepped_trial_num}:")
-    print(f"  Local Min: {stepped_trial['abs_min_val']:.2f} at t={stepped_trial['abs_min_time']:.2f}s")
-    print(f"  Local Max: {stepped_trial['abs_max_val']:.2f} at t={stepped_trial['abs_max_time']:.2f}s")
-    print(f"  Peak-to-peak: {stepped_trial['abs_peak_to_peak']:.2f}")
-    print(f"  AUC Total: {stepped_trial['auc_total']:.2f}")
-    
-    print(f"\n{control_type.upper()} TRIAL {control_trial_num}:")
-    
-    # Print time-yoked metrics
-    min_val_col = f'time_yoked_min_val_{reference_suffix}'
-    max_val_col = f'time_yoked_max_val_{reference_suffix}'
-    min_time_col = f'time_yoked_min_time_{reference_suffix}'
-    max_time_col = f'time_yoked_max_time_{reference_suffix}'
-    pp_col = f'time_yoked_peak_to_peak_{reference_suffix}'
-    
-    if control_trial.get(min_val_col) is not None:
-        print(f"  Time-yoked Min: {control_trial[min_val_col]:.2f} at t={control_trial[min_time_col]:.2f}s")
-        print(f"  Time-yoked Max: {control_trial[max_val_col]:.2f} at t={control_trial[max_time_col]:.2f}s")
-        print(f"  Time-yoked Peak-to-peak: {control_trial[pp_col]:.2f}")
-    
-    if control_trial.get('abs_max_val') is not None:
-        print(f"  True Max: {control_trial['abs_max_val']:.2f} at t={control_trial['abs_max_time']:.2f}s")
-        print(f"  True Min: {control_trial['abs_min_val']:.2f} at t={control_trial['abs_min_time']:.2f}s")
-    
-    print(f"  AUC Total: {control_trial['auc_total']:.2f}")
-
-# Now use the function for both comparisons:
-print("=== OFFSET vs T1_HOLD COMPARISON ===")
-plot_trial_comparison(structured_data, df, 'offset', 't1_hold', 'offset')
-
-print("\n" + "="*50 + "\n")
-
-print("=== INV vs T2_HOLD COMPARISON ===")
+# Random selection (original behavior)
 plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv')
 
-#%%
+# # Specific subject and specific control trial
+# plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv', specific_subject=117, specific_control_trial=1)
+
+# %%

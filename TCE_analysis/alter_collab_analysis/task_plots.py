@@ -1,15 +1,22 @@
 #%%
+# =============================================================
+# Load data and packages
+# =============================================================
 import json, sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
 import matplotlib.ticker as ticker
-with open('/userdata/ljohnston/TCE_analysis/data_from_ben/trial_data_cleaned_aligned.json') as f:
+import plotting_functions as pf
+with open('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_cleaned_aligned.json') as f:
     data = json.load(f)
 df = pd.DataFrame(data)
-sys.path.append('/userdata/ljohnston/TCE_analysis/data_from_ben/')
-import plotting_functions as pf
+
+#%%
+# =============================================================
+# Functions to align trials by temperature periods
+# =============================================================
 
 temp_change_offset = 0.67 # seconds 
 def define_timewindows(trial_type, trial_definitions, base_offset=0.0):
@@ -60,7 +67,17 @@ for trial_type in df['trial_type'].unique():
     time_temp_aligned_trial_type[trial_type] = aligned_trials
     print(f"Loaded {len(aligned_trials)} trials for {trial_type}")
 
-#%% Plot comparisons between trial types
+def align_temperature_for_plot(df):
+    """
+    Adjust temperature for plotting
+    """
+
+
+#%% 
+# =============================================================
+# Plot comparisons between trial types (time series)
+# =============================================================
+
 # Define the trial pairs to compare
 trial_pairs = [
     ['inv', 't2_hold'],
@@ -134,15 +151,16 @@ for pair in trial_pairs:
     axes[1].grid(True)
 
     plt.tight_layout()
-    plt.savefig(f'/userdata/ljohnston/TCE_analysis/data_from_ben/comparison_{pair[0]}_vs_{pair[1]}.svg', 
-                    dpi=300, bbox_inches='tight')
     plt.show()
     plt.close(fig)
 
 
-# %% Try adding in calibration trials that match t1_hold trials
+# %% 
+# ============================================================
+# Try adding in calibration trials that match t1_hold trials
+# ============================================================
 
-#%% Filter calibration trials matching T1 hold temperature
+# Filter calibration trials matching T1 hold temperature
 import numpy as np
 from scipy.spatial.distance import euclidean
 
@@ -205,151 +223,16 @@ def find_matching_calibration_trials(calibration_trials, t1_hold_trials, temp_to
     
     return matched_calibration
 
+# First, get the calibration and t1_hold trials
+calibration_trials = time_temp_aligned_trial_type.get('calibration', [])
+t1_hold_trials = time_temp_aligned_trial_type.get('t1_hold', [])
+
 # Apply the filter
 matched_calibration = find_matching_calibration_trials(
     calibration_trials, 
     t1_hold_trials, 
     temp_tolerance=0.1  # Within 1°C
 )
-
-#%% Plot matched calibration vs t1_hold
-fig, axes = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
-
-# Plot matched calibration trials
-for df in matched_calibration:
-    subject = df['subject'].iloc[0]
-    trial_num = df['trial_num'].iloc[0] if 'trial_num' in df.columns else 'unknown'
-    axes[0].plot(df.index, df['temperature'], 
-                alpha=0.3, color='blue', linewidth=1, label=f'Subj {subject}' if df is matched_calibration[0] else '')
-    axes[1].plot(df.index, df['pain'], 
-                alpha=0.3, color='blue', linewidth=1)
-
-# Plot mean matched calibration curve
-if len(matched_calibration) > 0:
-    time_grid = np.arange(-15, 40, 0.1)
-    all_temp_interp = []
-    all_pain_interp = []
-    
-    for df in matched_calibration:
-        valid_mask = (time_grid >= df.index.min()) & (time_grid <= df.index.max())
-        temp_interp = np.full(len(time_grid), np.nan)
-        pain_interp = np.full(len(time_grid), np.nan)
-        
-        if valid_mask.any():
-            temp_interp[valid_mask] = np.interp(time_grid[valid_mask], df.index.values, df['temperature'].values)
-            pain_interp[valid_mask] = np.interp(time_grid[valid_mask], df.index.values, df['pain'].values)
-        
-        all_temp_interp.append(temp_interp)
-        all_pain_interp.append(pain_interp)
-    
-    mean_temp = np.nanmean(all_temp_interp, axis=0)
-    mean_pain = np.nanmean(all_pain_interp, axis=0)
-    sem_temp = np.nanstd(all_temp_interp, axis=0) / np.sqrt(np.sum(~np.isnan(all_temp_interp), axis=0))
-    sem_pain = np.nanstd(all_pain_interp, axis=0) / np.sqrt(np.sum(~np.isnan(all_pain_interp), axis=0))
-    
-    valid_temp = ~np.isnan(mean_temp)
-    valid_pain = ~np.isnan(mean_pain)
-    
-    axes[0].plot(time_grid[valid_temp], mean_temp[valid_temp], 
-                color='blue', linewidth=3, label=f'Matched Calibration (n={len(matched_calibration)})')
-    axes[0].fill_between(time_grid[valid_temp], 
-                         (mean_temp - 1.96*sem_temp)[valid_temp],
-                         (mean_temp + 1.96*sem_temp)[valid_temp],
-                         color='blue', alpha=0.2)
-    
-    axes[1].plot(time_grid[valid_pain], mean_pain[valid_pain], 
-                color='blue', linewidth=3, label=f'Matched Calibration (n={len(matched_calibration)})')
-    axes[1].fill_between(time_grid[valid_pain],
-                         (mean_pain - 1.96*sem_pain)[valid_pain],
-                         (mean_pain + 1.96*sem_pain)[valid_pain],
-                         color='blue', alpha=0.2)
-
-# Plot t1_hold trials
-for df in t1_hold_trials:
-    axes[0].plot(df.index, df['temperature'], 
-                alpha=0.3, color='red', linewidth=1)
-    axes[1].plot(df.index, df['pain'], 
-                alpha=0.3, color='red', linewidth=1)
-
-# Plot mean t1_hold curve
-if len(t1_hold_trials) > 0:
-    time_grid = np.arange(-15, 40, 0.1)
-    all_temp_interp = []
-    all_pain_interp = []
-    
-    for df in t1_hold_trials:
-        valid_mask = (time_grid >= df.index.min()) & (time_grid <= df.index.max())
-        temp_interp = np.full(len(time_grid), np.nan)
-        pain_interp = np.full(len(time_grid), np.nan)
-        
-        if valid_mask.any():
-            temp_interp[valid_mask] = np.interp(time_grid[valid_mask], df.index.values, df['temperature'].values)
-            pain_interp[valid_mask] = np.interp(time_grid[valid_mask], df.index.values, df['pain'].values)
-        
-        all_temp_interp.append(temp_interp)
-        all_pain_interp.append(pain_interp)
-    
-    mean_temp = np.nanmean(all_temp_interp, axis=0)
-    mean_pain = np.nanmean(all_pain_interp, axis=0)
-    sem_temp = np.nanstd(all_temp_interp, axis=0) / np.sqrt(np.sum(~np.isnan(all_temp_interp), axis=0))
-    sem_pain = np.nanstd(all_pain_interp, axis=0) / np.sqrt(np.sum(~np.isnan(all_pain_interp), axis=0))
-    
-    valid_temp = ~np.isnan(mean_temp)
-    valid_pain = ~np.isnan(mean_pain)
-    
-    axes[0].plot(time_grid[valid_temp], mean_temp[valid_temp], 
-                color='red', linewidth=3, label=f'T1_hold (n={len(t1_hold_trials)})')
-    axes[0].fill_between(time_grid[valid_temp],
-                         (mean_temp - 1.96*sem_temp)[valid_temp],
-                         (mean_temp + 1.96*sem_temp)[valid_temp],
-                         color='red', alpha=0.2)
-    
-    axes[1].plot(time_grid[valid_pain], mean_pain[valid_pain], 
-                color='red', linewidth=3, label=f'T1_hold (n={len(t1_hold_trials)})')
-    axes[1].fill_between(time_grid[valid_pain],
-                         (mean_pain - 1.96*sem_pain)[valid_pain],
-                         (mean_pain + 1.96*sem_pain)[valid_pain],
-                         color='red', alpha=0.2)
-
-axes[0].set_ylabel('Temperature (°C)', fontsize=12)
-axes[0].set_title('Matched Calibration vs T1_hold - Temperature Traces', fontsize=14, fontweight='bold')
-axes[0].legend(fontsize=11)
-axes[0].grid(True, alpha=0.3)
-axes[0].set_xlim(-5, 30)
-
-axes[1].set_xlabel('Aligned Time (s)', fontsize=12)
-axes[1].set_ylabel('Pain Rating', fontsize=12)
-axes[1].set_title('Matched Calibration vs T1_hold - Pain Traces', fontsize=14, fontweight='bold')
-axes[1].legend(fontsize=11)
-axes[1].grid(True, alpha=0.3)
-axes[1].set_xlim(-5, 30)
-axes[1].set_ylim(0, 100)
-
-plt.tight_layout()
-plt.savefig('/userdata/ljohnston/TCE_analysis/data_from_ben/matched_calibration_vs_t1hold_comparison.svg', 
-            dpi=300, bbox_inches='tight')
-plt.show()
-
-# %%
-# Remake the plot adding the matched calibration trials to t1_hold trials
-# ...existing code...
-
-#%% Plot comparisons between trial types (with matched calibration trials added to t1_hold)
-# ...existing code...
-
-#%% Plot comparisons between trial types (with matched calibration trials added to t1_hold)
-
-# First, get the calibration and t1_hold trials
-calibration_trials = time_temp_aligned_trial_type.get('calibration', [])
-t1_hold_trials = time_temp_aligned_trial_type.get('t1_hold', [])
-
-# Find matching calibration trials
-matched_calibration = find_matching_calibration_trials(
-    calibration_trials, 
-    t1_hold_trials, 
-    temp_tolerance=0.1
-)
-
 # Create a modified version of time_temp_aligned_trial_type with combined t1_hold
 time_temp_aligned_with_calibration = time_temp_aligned_trial_type.copy()
 time_temp_aligned_with_calibration['t1_hold_combined'] = t1_hold_trials + matched_calibration
@@ -473,51 +356,20 @@ for pair in trial_pairs:
     axes[1].grid(True)
 
     plt.tight_layout()
-    # Save with descriptive filename
-    pair_save = [p if p != 't1_hold_combined' else 't1_hold_with_calib' for p in pair]
-    plt.savefig(f'/userdata/ljohnston/TCE_analysis/data_from_ben/comparison_{pair_save[0]}_vs_{pair_save[1]}.svg', 
-                    dpi=300, bbox_inches='tight')
     plt.show()
-    plt.close(fig)
 
-# %%
-# ...existing code...
 
-#%% Create 2x2 grid: offset vs t1_hold (left) and inv vs t2_hold (right)
+#%% 
+# ============================================================
+# Create a 2x2 grid of comparison plots
+# ============================================================
 
-# First, get the calibration and t1_hold trials
-calibration_trials = time_temp_aligned_trial_type.get('calibration', [])
-t1_hold_trials = time_temp_aligned_trial_type.get('t1_hold', [])
-
-# Find matching calibration trials
-matched_calibration = find_matching_calibration_trials(
-    calibration_trials, 
-    t1_hold_trials, 
-    temp_tolerance=0.1
-)
-
-# Create a modified version of time_temp_aligned_trial_type with combined t1_hold
-time_temp_aligned_with_calibration = time_temp_aligned_trial_type.copy()
-time_temp_aligned_with_calibration['t1_hold_combined'] = t1_hold_trials + matched_calibration
-
-print(f"\n=== COMBINED T1_HOLD TRIALS ===")
-print(f"Original t1_hold trials: {len(t1_hold_trials)}")
-print(f"Matched calibration trials: {len(matched_calibration)}")
-print(f"Combined total: {len(time_temp_aligned_with_calibration['t1_hold_combined'])}")
-
-# Define the two comparisons
-comparisons = [
-    {'pair': ['offset', 't1_hold_combined'], 'col': 0, 'title': 'Offset vs T1_hold'},
-    {'pair': ['inv', 't2_hold'], 'col': 1, 'title': 'Inv vs T2_hold'}
-]
-
-# Create 2x2 grid figure
 fig = plt.figure(figsize=(16, 10))
 gs = fig.add_gridspec(2, 2, height_ratios=[1, 3], hspace=0.25, wspace=0.25)
 
 color_map = plt.get_cmap('tab10')
 
-for comp in comparisons:
+for comp in trial_pairs:
     pair = comp['pair']
     col = comp['col']
     
@@ -625,9 +477,6 @@ for comp in comparisons:
 
 # Add overall title
 fig.suptitle('Temperature Contrast Effects on Pain', fontsize=16, fontweight='bold', y=0.98)
-
-plt.savefig('/userdata/ljohnston/TCE_analysis/data_from_ben/comparison_grid_offset_vs_inv.svg', 
-            dpi=300, bbox_inches='tight')
 plt.show()
 
 # %%
