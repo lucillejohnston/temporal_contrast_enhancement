@@ -67,13 +67,56 @@ for trial_type in df['trial_type'].unique():
     time_temp_aligned_trial_type[trial_type] = aligned_trials
     print(f"Loaded {len(aligned_trials)} trials for {trial_type}")
 
-def align_temperature_for_plot(df):
+def align_temperature_for_plot(df, subject_t2_temps):
     """
     Adjust temperature for plotting
+    Normalized to the subject's T2 temperature (from offset trials)
     """
-
+    df = df.copy()
+    df['temperature'] = pd.to_numeric(df['temperature'], errors='coerce')
+    subject = df['subject'].iloc[0]
+    if subject in subject_t2_temps:
+        t2_temp = subject_t2_temps[subject]
+        df['temperature_aligned_for_plot'] = df['temperature'] - t2_temp
+        print(f"Subject {subject}: T2={t2_temp:.1f}°C")
+    else:
+        print(f"Warning: T2 temperature not found for subject {subject}. No alignment applied.")
+        df['temperature_aligned_for_plot'] = df['temperature']  # Keep original if no alignment
+    return df
 
 #%% 
+subject_t2_temps = {}
+# Get all trial types that contain 'offset' (case-insensitive) or are specifically 'offset'
+offset_trial_types = [trial_type for trial_type in df['trial_type'].unique() 
+                      if 'offset' in str(trial_type).lower()]
+print(f"Offset trial types found: {offset_trial_types}")
+
+for subject in df['subject'].unique():
+    subject_temps = []
+    
+    # Look through all offset trial types for this subject
+    for trial_type in offset_trial_types:
+        subject_trial_data = df[(df['subject'] == subject) & (df['trial_type'] == trial_type)]
+        if not subject_trial_data.empty:
+            temps = pd.to_numeric(subject_trial_data['temperature'], errors='coerce').dropna()
+            if not temps.empty:
+                max_temp = temps.max()
+                subject_temps.append(max_temp)
+    
+    # Take the overall max across all offset trials for this subject
+    if subject_temps:
+        subject_t2_temps[int(subject)] = float(np.max(subject_temps))
+
+print(f"Got T2 temperatures for {len(subject_t2_temps)} subjects")
+print("Sample T2 baselines:", dict(list(subject_t2_temps.items())[:5]))
+
+# Apply the alignment using T2 temperatures
+for trial_type in time_temp_aligned_trial_type:
+    for i, trial_df in enumerate(time_temp_aligned_trial_type[trial_type]):
+        time_temp_aligned_trial_type[trial_type][i] = align_temperature_for_plot(trial_df, subject_t2_temps)
+
+print(f"\nTemperature alignment complete using T2 from offset trials!")
+#%%
 # =============================================================
 # Plot comparisons between trial types (time series)
 # =============================================================
@@ -118,7 +161,7 @@ for pair in trial_pairs:
         mean_curve = mean_df.groupby('time').mean().sort_index()
         axes[0].plot(mean_curve.index, mean_curve['temp'], label=trial_type, color=color_dict[trial_type], linewidth=2)
     axes[0].set_ylabel("Temperature")
-    axes[0].set_xlim(-5, 30)
+    axes[0].set_xlim(10, 40)
     axes[0].set_ylim(-1.5, 1)
     axes[0].set_title(f"Avg Aligned Temperature: {pair[0]} vs {pair[1]}")
     axes[0].legend()
@@ -144,7 +187,7 @@ for pair in trial_pairs:
         axes[1].fill_between(time_grid, mean_curve - 1.96*sem_curve, mean_curve + 1.96*sem_curve, color=color_dict[trial_type], alpha=0.2)
     axes[1].set_xlabel("Aligned Time (s)")
     axes[1].set_ylabel("Pain")
-    axes[1].set_xlim(-5, 30)
+    axes[1].set_xlim(10, 40)
     axes[1].set_ylim(10, 70)
     axes[1].set_title(f"Average Pain Curves: {pair[0]} vs {pair[1]}")
     axes[1].legend()
@@ -153,210 +196,6 @@ for pair in trial_pairs:
     plt.tight_layout()
     plt.show()
     plt.close(fig)
-
-
-# %% 
-# ============================================================
-# Try adding in calibration trials that match t1_hold trials
-# ============================================================
-
-# Filter calibration trials matching T1 hold temperature
-import numpy as np
-from scipy.spatial.distance import euclidean
-
-def find_matching_calibration_trials(calibration_trials, t1_hold_trials, temp_tolerance=1.0):
-    """
-    Find calibration trials that match T1 hold temperature profiles.
-    
-    Parameters:
-    -----------
-    calibration_trials : list of DataFrames
-        Calibration trial data
-    t1_hold_trials : list of DataFrames
-        T1 hold trial data
-    temp_tolerance : float
-        Maximum temperature difference (°C) to consider a match
-    
-    Returns:
-    --------
-    matched_calibration : list of DataFrames
-        Calibration trials matching T1 hold temperature profiles
-    """
-    matched_calibration = []
-    
-    # Get T1 hold temperature range for each subject
-    t1_hold_temps = {}
-    for df in t1_hold_trials:
-        subject = df['subject'].iloc[0]
-        max_temp = df['temperature'].max()
-        if subject not in t1_hold_temps:
-            t1_hold_temps[subject] = []
-        t1_hold_temps[subject].append(max_temp)
-    
-    # Average T1 hold temperature per subject
-    t1_hold_avg_temps = {subj: np.mean(temps) for subj, temps in t1_hold_temps.items()}
-    
-    print("\n=== T1 HOLD TEMPERATURE TARGETS ===")
-    for subject, temp in t1_hold_avg_temps.items():
-        print(f"Subject {subject}: {temp:.1f}°C")
-    
-    # Filter calibration trials
-    print("\n=== MATCHING CALIBRATION TRIALS ===")
-    for df in calibration_trials:
-        subject = df['subject'].iloc[0]
-        trial_num = df['trial_num'].iloc[0] if 'trial_num' in df.columns else 'unknown'
-        cal_max_temp = df['temperature'].max()
-        
-        if subject in t1_hold_avg_temps:
-            target_temp = t1_hold_avg_temps[subject]
-            temp_diff = abs(cal_max_temp - target_temp)
-            
-            if temp_diff <= temp_tolerance:
-                matched_calibration.append(df)
-                print(f"✓ Subject {subject}, Trial {trial_num}: {cal_max_temp:.1f}°C (diff: {temp_diff:.1f}°C)")
-            else:
-                print(f"✗ Subject {subject}, Trial {trial_num}: {cal_max_temp:.1f}°C (diff: {temp_diff:.1f}°C) - excluded")
-    
-    print(f"\n=== SUMMARY ===")
-    print(f"Total calibration trials: {len(calibration_trials)}")
-    print(f"Matched calibration trials: {len(matched_calibration)}")
-    
-    return matched_calibration
-
-# First, get the calibration and t1_hold trials
-calibration_trials = time_temp_aligned_trial_type.get('calibration', [])
-t1_hold_trials = time_temp_aligned_trial_type.get('t1_hold', [])
-
-# Apply the filter
-matched_calibration = find_matching_calibration_trials(
-    calibration_trials, 
-    t1_hold_trials, 
-    temp_tolerance=0.1  # Within 1°C
-)
-# Create a modified version of time_temp_aligned_trial_type with combined t1_hold
-time_temp_aligned_with_calibration = time_temp_aligned_trial_type.copy()
-time_temp_aligned_with_calibration['t1_hold_combined'] = t1_hold_trials + matched_calibration
-
-print(f"\n=== COMBINED T1_HOLD TRIALS ===")
-print(f"Original t1_hold trials: {len(t1_hold_trials)}")
-print(f"Matched calibration trials: {len(matched_calibration)}")
-print(f"Combined total: {len(time_temp_aligned_with_calibration['t1_hold_combined'])}")
-
-# Define the trial pairs to compare (using combined t1_hold)
-trial_pairs = [
-    ['inv', 't2_hold'],
-    ['offset', 't1_hold_combined'],
-    ['stepdown', 't1_hold_combined'],
-    ['offset', 'inv']
-]
-
-for pair in trial_pairs:
-    fig, axes = plt.subplots(
-        2, 1, figsize=(10, 8), sharex=True,
-        gridspec_kw={'height_ratios': [1, 3]}
-    )
-    color_map = plt.get_cmap('tab10')
-    color_dict = {k: color_map(i) for i, k in enumerate(pair)}
-
-    # Top: Plot temperature traces
-    for trial_type in pair:
-        if trial_type not in time_temp_aligned_with_calibration:
-            continue
-        dfs = time_temp_aligned_with_calibration[trial_type]
-        
-        # Plot mean curve
-        all_curves = []
-        all_times = []
-        for df in dfs:
-            # Optionally offset t1_hold
-            if trial_type == 't1_hold_combined':
-                temp = df['temperature_aligned_for_plot'] - 1
-                display_label = 't1_hold'
-            else:
-                temp = df['temperature_aligned_for_plot']
-                display_label = trial_type
-            all_curves.append(temp.values)
-            all_times.append(df.index.values)
-        
-        # Concatenate and compute mean at each unique time
-        all_times_flat = np.concatenate(all_times)
-        all_curves_flat = np.concatenate(all_curves)
-        mean_df = pd.DataFrame({'time': all_times_flat, 'temp': all_curves_flat})
-        mean_curve = mean_df.groupby('time').mean().sort_index()
-        
-        label = display_label if trial_type == 't1_hold_combined' else trial_type
-        axes[0].plot(mean_curve.index, mean_curve['temp'], label=label, 
-                    color=color_dict[trial_type], linewidth=2)
-    
-    axes[0].set_ylabel("Temperature")
-    axes[0].set_xlim(-5, 30)
-    axes[0].set_ylim(-1.5, 0.5)
-    pair_display = [p if p != 't1_hold_combined' else 't1_hold' for p in pair]
-    axes[0].set_title(f"Avg Aligned Temperature: {pair_display[0]} vs {pair_display[1]}")
-    axes[0].legend()
-    axes[0].grid(True)
-
-    # Bottom: Plot pain traces
-    for trial_type in pair:
-        if trial_type not in time_temp_aligned_with_calibration:
-            continue
-        dfs = time_temp_aligned_with_calibration[trial_type]
-        
-        # Plot mean curve with better handling of missing data
-        time_grid = np.arange(-15, 40, 0.1)
-        all_interp_curves = []
-        
-        for df in dfs:
-            # Only interpolate within the valid time range of each trial
-            valid_mask = (time_grid >= df.index.min()) & (time_grid <= df.index.max())
-            interp_curve = np.full(len(time_grid), np.nan)
-            
-            if valid_mask.any() and len(df['pain']) > 0:
-                # Remove NaN values before interpolation
-                valid_data = df['pain'].dropna()
-                if len(valid_data) > 1:
-                    interp_curve[valid_mask] = np.interp(
-                        time_grid[valid_mask], 
-                        valid_data.index.values, 
-                        valid_data.values,
-                        left=np.nan,
-                        right=np.nan
-                    )
-            all_interp_curves.append(interp_curve)
-        
-        if len(all_interp_curves) > 0:
-            all_interp_curves = np.array(all_interp_curves)
-            
-            # Compute mean and SEM only where we have data
-            with np.errstate(invalid='ignore'):  # Suppress warnings for all-NaN slices
-                mean_curve = np.nanmean(all_interp_curves, axis=0)
-                n_valid = np.sum(~np.isnan(all_interp_curves), axis=0)
-                sem_curve = np.nanstd(all_interp_curves, axis=0, ddof=1) / np.sqrt(n_valid)
-                
-                # Only plot where we have at least 3 trials contributing
-                valid_points = n_valid >= 3
-                
-                label = 't1_hold' if trial_type == 't1_hold_combined' else trial_type
-                axes[1].plot(time_grid[valid_points], mean_curve[valid_points], 
-                           label=f"{label} (n={len(dfs)})", 
-                           color=color_dict[trial_type], linewidth=2)
-                axes[1].fill_between(
-                    time_grid[valid_points], 
-                    (mean_curve - 1.96*sem_curve)[valid_points], 
-                    (mean_curve + 1.96*sem_curve)[valid_points], 
-                    color=color_dict[trial_type], alpha=0.2
-                )
-    
-    axes[1].set_xlabel("Aligned Time (s)")
-    axes[1].set_ylabel("Pain")
-    axes[1].set_xlim(-5, 30)
-    axes[1].set_ylim(0, 100)
-    axes[1].set_title(f"Average Pain Curves: {pair_display[0]} vs {pair_display[1]}")
-    axes[1].legend()
-    axes[1].grid(True)
-
-    plt.tight_layout()
-    plt.show()
 
 
 #%% 
@@ -381,16 +220,16 @@ for comp in trial_pairs:
     
     # Top: Plot temperature traces
     for trial_type in pair:
-        if trial_type not in time_temp_aligned_with_calibration:
+        if trial_type not in time_temp_aligned_trial_type:
             continue
-        dfs = time_temp_aligned_with_calibration[trial_type]
+        dfs = time_temp_aligned_trial_type[trial_type]
         
         # Plot mean curve
         all_curves = []
         all_times = []
         for df in dfs:
             # Optionally offset t1_hold
-            if trial_type == 't1_hold_combined':
+            if trial_type == 't1_hold':
                 temp = df['temperature_aligned_for_plot'] - 1
                 display_label = 't1_hold'
             else:
@@ -419,9 +258,9 @@ for comp in trial_pairs:
     
     # Bottom: Plot pain traces
     for trial_type in pair:
-        if trial_type not in time_temp_aligned_with_calibration:
+        if trial_type not in time_temp_aligned_trial_type:
             continue
-        dfs = time_temp_aligned_with_calibration[trial_type]
+        dfs = time_temp_aligned_trial_type[trial_type]
         
         # Plot mean curve with better handling of missing data
         time_grid = np.arange(-15, 40, 0.1)
@@ -478,5 +317,3 @@ for comp in trial_pairs:
 # Add overall title
 fig.suptitle('Temperature Contrast Effects on Pain', fontsize=16, fontweight='bold', y=0.98)
 plt.show()
-
-# %%

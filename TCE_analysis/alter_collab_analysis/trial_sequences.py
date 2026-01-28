@@ -58,6 +58,10 @@ preceding_metrics = {
     'preceding_abs_max_val': 'abs_max_val',
     'preceding_abs_min_val': 'abs_min_val',
     'preceding_abs_peak_to_peak': 'abs_peak_to_peak',
+    'preceding_time_yoked_max_val_offset': 'time_yoked_max_val_offset',
+    'preceding_time_yoked_min_val_offset': 'time_yoked_min_val_inv',
+    'preceding_time_yoked_peak_to_peak_offset': 'time_yoked_peak_to_peak_offset',
+    'preceding_time_yoked_min_val_inv': 'time_yoked_min_val_inv',
     'preceding_auc_A': 'auc_A',
     'preceding_auc_B': 'auc_B',
     'preceding_auc_C': 'auc_C',
@@ -420,9 +424,9 @@ fig.suptitle('Normalized Pain Change vs Preceding Trial Metrics',
 
 # Adjust layout
 plt.tight_layout(rect=[0, 0, 1, 0.99])
-# Save figure
-plt.savefig('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/pain_change_vs_preceding_metrics_grid.svg', 
-            dpi=300, bbox_inches='tight')
+# # Save figure
+# plt.savefig('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/pain_change_vs_preceding_metrics_grid.svg', 
+#             dpi=300, bbox_inches='tight')
 plt.show()
 
 # %%

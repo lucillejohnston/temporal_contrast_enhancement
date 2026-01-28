@@ -1,5 +1,8 @@
 import sqlite3
-
+"""
+I had previously made a SQLite database out of Ben's data
+This is the script to extract that 
+"""
 def print_tables_and_columns(db_path):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -33,7 +36,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-db_path = '/userdata/ljohnston/TCE_analysis/data_from_ben/combined_data.sqlite'
+db_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/combined_data.sqlite'
 # Connect to the SQLite database.
 conn = sqlite3.connect(db_path)
 # Join metadata and trial_data on subject and trial_num.

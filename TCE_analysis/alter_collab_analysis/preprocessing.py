@@ -144,6 +144,64 @@ def align_trials_time(timeseries_dict, smoothing=True, smoothing_window=10,
 
     return aligned_dict
 
+def find_matching_calibration_trials(calibration_trials, t1_hold_trials, temp_tolerance=1.0):
+    """
+    Find calibration trials that match T1 hold temperature profiles.
+    
+    Parameters:
+    -----------
+    calibration_trials : list of DataFrames
+        Calibration trial data
+    t1_hold_trials : list of DataFrames
+        T1 hold trial data
+    temp_tolerance : float
+        Maximum temperature difference (°C) to consider a match
+    
+    Returns:
+    --------
+    matched_calibration : list of DataFrames
+        Calibration trials matching T1 hold temperature profiles
+    """
+    matched_calibration = []
+    
+    # Get T1 hold temperature range for each subject
+    t1_hold_temps = {}
+    for df in t1_hold_trials:
+        subject = df['subject'].iloc[0]
+        max_temp = df['temperature'].max()
+        if subject not in t1_hold_temps:
+            t1_hold_temps[subject] = []
+        t1_hold_temps[subject].append(max_temp)
+    
+    # Average T1 hold temperature per subject
+    t1_hold_avg_temps = {subj: np.mean(temps) for subj, temps in t1_hold_temps.items()}
+    
+    print("\n=== T1 HOLD TEMPERATURE TARGETS ===")
+    for subject, temp in t1_hold_avg_temps.items():
+        print(f"Subject {subject}: {temp:.1f}°C")
+    
+    # Filter calibration trials
+    print("\n=== MATCHING CALIBRATION TRIALS ===")
+    for df in calibration_trials:
+        subject = df['subject'].iloc[0]
+        trial_num = df['trial_num'].iloc[0] if 'trial_num' in df.columns else 'unknown'
+        cal_max_temp = df['temperature'].max()
+        
+        if subject in t1_hold_avg_temps:
+            target_temp = t1_hold_avg_temps[subject]
+            temp_diff = abs(cal_max_temp - target_temp)
+            
+            if temp_diff <= temp_tolerance:
+                matched_calibration.append(df)
+                print(f"✓ Subject {subject}, Trial {trial_num}: {cal_max_temp:.1f}°C (diff: {temp_diff:.1f}°C)")
+            else:
+                print(f"✗ Subject {subject}, Trial {trial_num}: {cal_max_temp:.1f}°C (diff: {temp_diff:.1f}°C) - excluded")
+    
+    print(f"\n=== SUMMARY ===")
+    print(f"Total calibration trials: {len(calibration_trials)}")
+    print(f"Matched calibration trials: {len(matched_calibration)}")
+    
+    return matched_calibration
 
 #%% LOAD, DOWNSAMPLE, ALIGN TRIALS
 # Align data in time and make another column aligned in temperature for plotting 
@@ -362,11 +420,74 @@ for key, df in aligned_dict.items():
 
 cleaned_aligned_df = pd.concat(dfs_with_time, ignore_index=True)
 
+#%% MATCH CALIBRATION TRIALS TO T1_HOLD TRIALS
+# Group aligned trials by trial_type
+aligned_by_type = {}
+for key, df in aligned_dict.items():
+    trial_type = df['trial_type'].dropna().iloc[0]
+    if trial_type not in aligned_by_type:
+        aligned_by_type[trial_type] = []
+    aligned_by_type[trial_type].append(df)
+
+# Get calibration and t1_hold trials
+calibration_trials = aligned_by_type.get('calibration', [])
+t1_hold_trials = aligned_by_type.get('t1_hold', [])
+
+print(f"\n=== MATCHING CALIBRATION TO T1_HOLD ===")
+print(f"Calibration trials: {len(calibration_trials)}")
+print(f"T1_hold trials: {len(t1_hold_trials)}")
+
+# Find matching calibration trials
+matched_calibration = find_matching_calibration_trials(
+    calibration_trials, 
+    t1_hold_trials, 
+    temp_tolerance=0.5
+)
+
+print(f"\n=== RESULTS ===")
+print(f"Matched calibration trials: {len(matched_calibration)}")
+
+# Add matched calibration trials to cleaned_aligned_df as t1_hold
+if matched_calibration:
+    new_rows = []
+    for cal_df in matched_calibration:
+        cal_copy = cal_df.copy()
+        if cal_copy.index.name == 'aligned_time' or pd.api.types.is_numeric_dtype(cal_copy.index):
+            cal_copy = cal_copy.reset_index()
+            if 'index' in cal_copy.columns and 'aligned_time' not in cal_copy.columns:
+                cal_copy.rename(columns={'index': 'aligned_time'}, inplace=True)
+        
+        # Make sure we have the necessary columns
+        if 'aligned_time' not in cal_copy.columns:
+            print(f"⚠️  Warning: aligned_time not found in calibration trial. Columns: {cal_copy.columns.tolist()}")
+            continue
+        
+        # Change trial_type to t1_hold
+        cal_copy['trial_type'] = 't1_hold'
+        cal_copy['original_trial_type'] = 'calibration'
+        
+        new_rows.extend(cal_copy.to_dict('records'))
+    
+    # Create dataframe from new rows
+    new_df = pd.DataFrame(new_rows)
+    
+    # Add original_trial_type to existing df
+    if 'original_trial_type' not in cleaned_aligned_df.columns:
+        cleaned_aligned_df['original_trial_type'] = cleaned_aligned_df['trial_type']
+    
+    # Concatenate
+    cleaned_aligned_df = pd.concat([cleaned_aligned_df, new_df], ignore_index=True)
+    
+    print(f"\n✅ Added {len(new_rows)} rows from matched calibration trials as t1_hold")
+    print(f"New total rows: {len(cleaned_aligned_df)}")
+    print(f"\nT1_hold breakdown:")
+    print(cleaned_aligned_df[cleaned_aligned_df['trial_type'] == 't1_hold']['original_trial_type'].value_counts())
+
 
 #%%
 columns_to_save = [
     'subject', 'trial_num', 'trial_type', 'temperature', 'pain',
-    'aligned_time'
+    'aligned_time', 'original_trial_type'
 ]
 cleaned_aligned_df = cleaned_aligned_df[[col for col in columns_to_save if col in cleaned_aligned_df.columns]]
 print(cleaned_aligned_df.head())
