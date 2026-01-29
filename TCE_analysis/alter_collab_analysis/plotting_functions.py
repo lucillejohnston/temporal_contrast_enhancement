@@ -144,7 +144,94 @@ def create_correlation_scatter(df, x_col, y_col, title=None, xlabel=None, ylabel
         "intercept": intercept
     }
 
+def create_correlation_scatter_corrected(df, x_col, y_col, title=None, xlabel=None, ylabel=None,
+                               filter_col=None, filter_val=None, figsize=(8,6), 
+                               p_corrected=None, p_uncorrected=None, r_value=None):
+    """
+    Modified version of create_correlation_scatter that uses corrected p-values
+    """
+    # Apply filter if specified
+    if filter_col and filter_val:
+        if isinstance(filter_val, list):
+            subset = df[df[filter_col].isin(filter_val)]
+        else:
+            subset = df[df[filter_col] == filter_val]
+    else:
+        subset = df.copy()
 
+    # Remove null values
+    mask = subset[x_col].notnull() & subset[y_col].notnull()
+    x = subset.loc[mask, x_col]
+    y = subset.loc[mask, y_col]
+    
+    # Calculate correlation if not provided
+    if r_value is None or p_uncorrected is None:
+        slope, intercept, r_value, p_uncorrected, std_err = stats.linregress(x, y)
+    else:
+        slope, intercept, _, _, std_err = stats.linregress(x, y)
+    
+    # Use corrected p-value if provided
+    p_to_display = p_corrected if p_corrected is not None else p_uncorrected
+    
+    print(f"{x_col} vs. {y_col}:")
+    print(f"  Correlation r: {r_value:.3f}")
+    print(f"  Uncorrected p: {p_uncorrected:.4f}")
+    if p_corrected is not None:
+        print(f"  FDR corrected p: {p_corrected:.4f}")
+
+    # Create scatter plot
+    plt.figure(figsize=figsize)
+    plt.scatter(x, y, alpha=0.7)
+    
+    # Add regression line if significant after correction
+    if p_to_display < 0.05:
+        x_vals = np.array([x.min(), x.max()])
+        y_vals = intercept + slope * x_vals
+        plt.plot(x_vals, y_vals, color='red', linewidth=2)
+        line_color = 'red'
+    else:
+        line_color = 'gray'
+    
+    # Add statistics text with corrected p-value
+    if p_corrected is not None:
+        stats_text = f"p_raw = {p_uncorrected:.3g}\np_FDR = {p_corrected:.3g}\nr = {r_value:.3f}"
+        # Color code the text box based on significance
+        box_color = "lightgreen" if p_corrected < 0.05 else "lightgray"
+    else:
+        stats_text = f"p = {p_uncorrected:.3g}\nr = {r_value:.3f}"
+        box_color = "lightgreen" if p_uncorrected < 0.05 else "lightgray"
+    
+    plt.text(0.05, 0.95, stats_text,
+             transform=plt.gca().transAxes,
+             verticalalignment='top',
+             bbox=dict(boxstyle="round", facecolor=box_color, alpha=0.8))
+    
+    # Add significance indicator to title
+    if p_corrected is not None:
+        if p_corrected < 0.001:
+            sig_marker = " ***"
+        elif p_corrected < 0.01:
+            sig_marker = " **"
+        elif p_corrected < 0.05:
+            sig_marker = " *"
+        else:
+            sig_marker = " (ns)"
+    else:
+        sig_marker = ""
+    
+    plt.title((title if title else f"{y_col} vs. {x_col}") + sig_marker)
+    plt.xlabel(xlabel if xlabel else x_col)
+    plt.ylabel(ylabel if ylabel else y_col)
+    plt.tight_layout()
+    plt.show()
+    
+    return {
+        "r_value": r_value,
+        "p_uncorrected": p_uncorrected,
+        "p_corrected": p_corrected,
+        "slope": slope,
+        "intercept": intercept
+    }
 
 def plot_trial_comparison(structured_data, df, stepped_type, control_type, reference_suffix, 
                          specific_subject=None, specific_control_trial=None):

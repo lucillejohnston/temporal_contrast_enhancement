@@ -8,7 +8,7 @@ import pandas as pd
 import seaborn as sns
 import sys, os, json
 import scipy.stats as stats
-
+from statsmodels.stats.multitest import multipletests
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from plotting_functions import *  
 
@@ -91,53 +91,53 @@ for new_col, source_col in preceding_metrics.items():
     )
 
 
-#%%
+# %%
 # ========================================================
 # Preliminary plots of OA/OH trials by preceding trial type
 # ========================================================
-# # Filter for OA/OH trials
-# oa_oh_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(['offset', 'inv'])].copy()
+# Filter for OA/OH trials
+oa_oh_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(['offset', 'inv'])].copy()
 
-# # Violin plot of max_val in OA/OH trials, separated by preceding trial type
-# plt.figure(figsize=(8, 6))
-# sns.violinplot(
-#     data=oa_oh_trials,
-#     x='preceding_trial_type',
-#     y='max_val',
-#     hue='trial_type',
-#     split=True
-# )
-# plt.title('OA/OH trial max_val by preceding trial type')
-# plt.xlabel('Preceding Trial Type')
-# plt.ylabel('max_val')
-# plt.tight_layout()
-# plt.show()
+# Violin plot of abs_max_val in OA/OH trials, separated by preceding trial type
+plt.figure(figsize=(8, 6))
+sns.violinplot(
+    data=oa_oh_trials,
+    x='preceding_trial_type',
+    y='abs_max_val',
+    hue='trial_type',
+    split=True
+)
+plt.title('OA/OH trial max_val by preceding trial type')
+plt.xlabel('Preceding Trial Type')
+plt.ylabel('Max Value')
+plt.tight_layout()
+plt.show()
 
-# # Plot normalized pain change for 'offset' trials
-# plt.figure(figsize=(8, 6))
-# sns.violinplot(
-#     data=oa_oh_trials[oa_oh_trials['trial_type'] == 'offset'],
-#     x='preceding_trial_type',
-#     y='normalized_pain_change'
-# )
-# plt.title('Offset trials: Normalized pain change by preceding trial type')
-# plt.xlabel('Preceding Trial Type')
-# plt.ylabel('Normalized Pain Change (%)')
-# plt.tight_layout()
-# plt.show()
+# Plot normalized pain change for 'offset' trials
+plt.figure(figsize=(8, 6))
+sns.violinplot(
+    data=oa_oh_trials[oa_oh_trials['trial_type'] == 'offset'],
+    x='preceding_trial_type',
+    y='abs_normalized_pain_change'
+)
+plt.title('Offset trials: Normalized pain change by preceding trial type')
+plt.xlabel('Preceding Trial Type')
+plt.ylabel('Normalized Pain Change (%)')
+plt.tight_layout()
+plt.show()
 
-# # Plot normalized pain change for 'inv' trials
-# plt.figure(figsize=(8, 6))
-# sns.violinplot(
-#     data=oa_oh_trials[oa_oh_trials['trial_type'] == 'inv'],
-#     x='preceding_trial_type',
-#     y='normalized_pain_change'
-# )
-# plt.title('Inv trials: Normalized pain change by preceding trial type')
-# plt.xlabel('Preceding Trial Type')
-# plt.ylabel('Normalized Pain Change (%)')
-# plt.tight_layout()
-# plt.show()
+# Plot normalized pain change for 'inv' trials
+plt.figure(figsize=(8, 6))
+sns.violinplot(
+    data=oa_oh_trials[oa_oh_trials['trial_type'] == 'inv'],
+    x='preceding_trial_type',
+    y='abs_normalized_pain_change'
+)
+plt.title('Inv trials: Normalized pain change by preceding trial type')
+plt.xlabel('Preceding Trial Type')
+plt.ylabel('Normalized Pain Change (%)')
+plt.tight_layout()
+plt.show()
 
 # %%
 # ========================================================================================
@@ -147,88 +147,133 @@ for new_col, source_col in preceding_metrics.items():
 # Filter for OA/OH trials
 oa_oh_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(['offset', 'inv'])].copy()
 
-# Scatter plot: preceding_auc_total vs. normalized pain change for all OA/OH trials
-for ttype in ['offset', 'inv']:
-    create_correlation_scatter(                                                 # preceding AUC total vs. normalized pain change
-        oa_oh_trials,
-        x_col='preceding_auc_total',
-        y_col='abs_normalized_pain_change',
-        title=f"{ttype.capitalize()} trials: Normalized pain change vs. preceding AUC Total",
-        xlabel='Preceding AUC Total',
-        ylabel='Normalized Pain Change (%)',
-        filter_col='trial_type',
-        filter_val=ttype
+# Store all correlation results for multiple comparisons correction
+correlation_results = []
+
+print("=" * 80)
+print("PRECEDING TRIAL CONTEXT EFFECTS ON CONTRAST ENHANCEMENT")
+print("=" * 80)
+
+################################################################################################################### Define all the correlations to test
+correlations_to_test = [
+    # Format: (trial_type, x_col, y_col, description, xlabel, ylabel)
+    ('offset', 'preceding_auc_total', 'abs_normalized_pain_change', 
+     'OA: Preceding AUC → Current OA', 'Preceding AUC Total', 'Offset Analgesia (%)'),
+    ('inv', 'preceding_auc_total', 'abs_normalized_pain_change', 
+     'OH: Preceding AUC → Current OH', 'Preceding AUC Total', 'Onset Hyperalgesia (%)'),
+    ('offset', 'preceding_abs_max_val', 'abs_normalized_pain_change', 
+     'OA: Preceding Max → Current OA', 'Preceding Max Pain', 'Offset Analgesia (%)'),
+    ('inv', 'preceding_abs_max_val', 'abs_normalized_pain_change', 
+     'OH: Preceding Max → Current OH', 'Preceding Max Pain', 'Onset Hyperalgesia (%)'),
+    ('offset', 'preceding_abs_peak_to_peak', 'abs_normalized_pain_change', 
+     'OA: Preceding P2P → Current OA', 'Preceding Peak-to-Peak', 'Offset Analgesia (%)'),
+    ('inv', 'preceding_abs_peak_to_peak', 'abs_normalized_pain_change', 
+     'OH: Preceding P2P → Current OH', 'Preceding Peak-to-Peak', 'Onset Hyperalgesia (%)'),
+    ('offset', 'preceding_abs_min_val', 'abs_normalized_pain_change', 
+     'OA: Preceding Min → Current OA', 'Preceding Min Pain', 'Offset Analgesia (%)'),
+    ('inv', 'preceding_abs_min_val', 'abs_normalized_pain_change', 
+     'OH: Preceding Min → Current OH', 'Preceding Min Pain', 'Onset Hyperalgesia (%)'),
+    ('offset', 'preceding_abs_normalized_pain_change', 'abs_normalized_pain_change', 
+     'OA: Preceding Normalized Pain Change → Current OA', 'Preceding Normalized Pain Change (%)', 'Current Offset Analgesia (%)'),
+    ('inv', 'preceding_abs_normalized_pain_change', 'abs_normalized_pain_change', 
+     'OH: Preceding Normalized Pain Change → Current OH', 'Preceding Normalized Pain Change (%)', 'Current Onset Hyperalgesia (%)')
+]
+
+################################################################################################################### First pass: collect all correlation statistics
+print("COLLECTING CORRELATION STATISTICS...")
+print("-" * 50)
+for trial_type, x_col, y_col, description, xlabel, ylabel in correlations_to_test:
+    # Filter data for this specific test
+    subset = oa_oh_trials[oa_oh_trials['trial_type'] == trial_type]
+    clean_data = subset.dropna(subset=[x_col, y_col])
+    
+    if len(clean_data) >= 5:  # Need minimum data points
+        # Calculate correlation
+        r, p_uncorrected = stats.pearsonr(clean_data[x_col], clean_data[y_col])
+        
+        # Store results
+        correlation_results.append({
+            'description': description,
+            'trial_type': trial_type,
+            'x_col': x_col,
+            'y_col': y_col,
+            'xlabel': xlabel,
+            'ylabel': ylabel,
+            'r': r,
+            'p_uncorrected': p_uncorrected,
+            'n': len(clean_data)
+        })
+        
+        print(f"{description}: r={r:.3f}, p={p_uncorrected:.4f}, n={len(clean_data)}")
+    else:
+        print(f"INSUFFICIENT DATA for {description}: n={len(clean_data)}")
+
+################################################################################################################### Apply multiple comparisons correction
+if correlation_results:
+    p_values = [result['p_uncorrected'] for result in correlation_results]
+    # Benjamini-Hochberg FDR correction (recommended)
+    rejected_fdr, p_corrected_fdr, alpha_sidak, alpha_bonf = multipletests(
+        p_values, method='fdr_bh', alpha=0.05
     )
-
-    create_correlation_scatter(                                                 # preceding absolute max_val vs. normalized pain change
-        oa_oh_trials,
-        x_col='preceding_abs_max_val',
-        y_col='abs_normalized_pain_change',
-        title=f"{ttype.capitalize()} trials: Normalized pain change vs. preceding Absolute Max Val",
-        xlabel='Preceding Absolute Max Val',
-        ylabel='Normalized Pain Change (%)',
-        filter_col='trial_type',
-        filter_val=ttype
+    # Bonferroni correction (more conservative)
+    rejected_bonf, p_corrected_bonf, _, _ = multipletests(
+        p_values, method='bonferroni', alpha=0.05
     )
+    # Add corrected p-values to results
+    for i, result in enumerate(correlation_results):
+        result['p_fdr'] = p_corrected_fdr[i]
+        result['p_bonferroni'] = p_corrected_bonf[i]
+        result['significant_fdr'] = rejected_fdr[i]
+        result['significant_bonferroni'] = rejected_bonf[i]
 
-    create_correlation_scatter(                                                  # preceding peak-to-peak vs current normalized pain change
-        oa_oh_trials,
-        x_col='preceding_abs_peak_to_peak',
-        y_col='abs_normalized_pain_change',
-        title=f"{ttype.capitalize()} trials: Normalized pain change vs. preceding Peak-to-Peak",
-        xlabel='Preceding Peak-to-Peak',
-        ylabel='Normalized Pain Change (%)',
+################################################################################################################### Print results table
+print(f"\n" + "=" * 80)
+print(f"MULTIPLE COMPARISONS CORRECTION RESULTS (n = {len(correlation_results)} tests)")
+print("=" * 80)
+print(f"{'Description':<35} {'r':<8} {'p_raw':<8} {'p_FDR':<8} {'p_Bonf':<8} {'n':<5} {'FDR_Sig':<8}")
+print("-" * 80)
+
+significant_tests = []
+for result in correlation_results:
+    sig_fdr = "***" if result['p_fdr'] < 0.001 else "**" if result['p_fdr'] < 0.01 else "*" if result['p_fdr'] < 0.05 else "ns"
+    
+    print(f"{result['description']:<35} {result['r']:<8.3f} {result['p_uncorrected']:<8.4f} "
+          f"{result['p_fdr']:<8.4f} {result['p_bonferroni']:<8.4f} {result['n']:<5} {sig_fdr:<8}")
+    
+    if result['significant_fdr']:
+        significant_tests.append(result)
+
+################################################################################################################## Create plots 
+
+if significant_tests:
+    print(f"Found {len(significant_tests)} significant results after FDR correction:")
+    for result in significant_tests:
+        print(f"  - {result['description']}: r={result['r']:.3f}, p_FDR={result['p_fdr']:.4f}")
+else:
+    print("No significant results after FDR correction.")
+print(f"\nGenerating all plots (significant results will show regression lines)...")
+
+# Generate plots for all correlations
+for result in correlation_results:
+    print(f"\n{'-'*50}")
+    print(f"PLOTTING: {result['description']}")
+    print(f"{'-'*50}")
+    
+    # Create the plot using your modified function
+    plot_result = create_correlation_scatter_corrected(
+        df=oa_oh_trials,
+        x_col=result['x_col'],
+        y_col=result['y_col'],
+        title=result['description'],
+        xlabel=result['xlabel'],
+        ylabel=result['ylabel'],
         filter_col='trial_type',
-        filter_val=ttype
+        filter_val=result['trial_type'],
+        figsize=(8, 6),
+        p_corrected=result['p_fdr'],
+        p_uncorrected=result['p_uncorrected'],
+        r_value=result['r']
     )
-
-# Scatter plot: preceding_min_value vs. normalized pain change for OA (offset) trials
-create_correlation_scatter(
-    oa_oh_trials,
-    x_col='preceding_abs_min_val',
-    y_col='abs_normalized_pain_change',
-    title="Offset trials: Normalized pain change vs. preceding Min Value",
-    xlabel='Preceding Min Value',
-    ylabel='Normalized Pain Change (%)',
-    filter_col='trial_type',
-    filter_val='offset'
-)
-
-# Scatter plot: preceding_min_value vs. normalized pain change for OH (inv) trials
-create_correlation_scatter(
-    oa_oh_trials,
-    x_col='preceding_abs_min_val',
-    y_col='abs_normalized_pain_change',
-    title="Inv trials: Normalized pain change vs. preceding Min Value",
-    xlabel='Preceding Min Value',
-    ylabel='Normalized Pain Change (%)',
-    filter_col='trial_type',
-    filter_val='inv'
-)
-
-# Scatter plot: preceding_abs_normalized_pain_change vs. normalized pain change OH trials
-create_correlation_scatter(
-    oa_oh_trials,
-    x_col='preceding_abs_normalized_pain_change',
-    y_col='abs_normalized_pain_change',
-    title="OH trials: Normalized pain change vs. preceding Normalized Pain Change",
-    xlabel='Preceding Normalized Pain Change (%)',
-    ylabel='Normalized Pain Change (%)',
-    filter_col='trial_type',
-    filter_val='inv'
-)
-
-# Scatter plot: preceding_abs_normalized_pain_change vs. normalized pain change OA trials
-create_correlation_scatter(
-    oa_oh_trials,
-    x_col='preceding_abs_normalized_pain_change',
-    y_col='abs_normalized_pain_change',
-    title="OA trials: Normalized pain change vs. preceding Normalized Pain Change",
-    xlabel='Preceding Normalized Pain Change (%)',
-    ylabel='Normalized Pain Change (%)',
-    filter_col='trial_type',
-    filter_val='offset'
-)
 
 # %%
 # ========================================================================
@@ -430,3 +475,80 @@ plt.tight_layout(rect=[0, 0, 1, 0.99])
 plt.show()
 
 # %%
+"""====================================================================================================
+SUMMARY: PRECEDING TRIAL CONTEXT EFFECTS ON CONTRAST ENHANCEMENT
+====================================================================================================
+Test                                     r        p_raw    p_FDR    p_Bonf   n     FDR   Bonf  Effect   Direction
+----------------------------------------------------------------------------------------------------
+OA: Preceding AUC → Current OA           0.208    0.0027   0.0054   0.0271   206   **    *     Small    Positive
+OH: Preceding AUC → Current OH           -0.366   0.0000   0.0001   0.0002   130   ***   ***   Medium   Negative
+OA: Preceding Max → Current OA           0.008    0.9090   0.9090   1.0000   206   ns    ns    Negligible Positive
+OH: Preceding Max → Current OH           -0.231   0.0083   0.0138   0.0827   130   *     ns    Small    Negative
+OA: Preceding P2P → Current OA           -0.289   0.0000   0.0001   0.0002   206   ***   ***   Small    Negative
+OH: Preceding P2P → Current OH           0.050    0.5712   0.7140   1.0000   130   ns    ns    Negligible Positive
+OA: Preceding Min → Current OA           0.345    0.0000   0.0000   0.0000   206   ***   ***   Medium   Positive
+OH: Preceding Min → Current OH           -0.264   0.0024   0.0054   0.0238   130   **    *     Small    Negative
+OA: Preceding Normalized Pain Change → Current OA 0.031    0.6613   0.7348   1.0000   206   ns    ns    Negligible Positive
+OH: Preceding Normalized Pain Change → Current OH -0.201   0.0221   0.0316   0.2214   130   *     ns    Small    Negative
+
+====================================================================================================
+SIGNIFICANCE SUMMARY
+====================================================================================================
+Total tests performed: 10
+Significant after FDR correction (α = 0.05): 7/10 (70.0%)
+Significant after Bonferroni correction (α = 0.05): 5/10 (50.0%)
+
+====================================================================================================
+PATTERN ANALYSIS
+====================================================================================================
+
+OFFSET ANALGESIA (OA) - 3 significant effects:
+  ↑ OA: Preceding AUC → Current OA: r = 0.208, p_FDR = 0.0054
+  ↓ OA: Preceding P2P → Current OA: r = -0.289, p_FDR = 0.0001
+  ↑ OA: Preceding Min → Current OA: r = 0.345, p_FDR = 0.0000
+
+ONSET HYPERALGESIA (OH) - 4 significant effects:
+  ↓ OH: Preceding AUC → Current OH: r = -0.366, p_FDR = 0.0001
+  ↓ OH: Preceding Max → Current OH: r = -0.231, p_FDR = 0.0138
+  ↓ OH: Preceding Min → Current OH: r = -0.264, p_FDR = 0.0054
+  ↓ OH: Preceding Normalized Pain Change → Current OH: r = -0.201, p_FDR = 0.0316
+
+====================================================================================================
+BIOLOGICAL INTERPRETATION
+====================================================================================================
+
+KEY FINDINGS:
+
+1. OFFSET ANALGESIA ENHANCEMENT:
+   • Previous pain experiences STRENGTHEN subsequent offset analgesia:
+     - OA: Preceding AUC: r = 0.208
+     - OA: Preceding Min: r = 0.345
+   • Previous pain experiences WEAKEN subsequent offset analgesia:
+     - OA: Preceding P2P: r = -0.289
+
+2. ONSET HYPERALGESIA HABITUATION:
+   • Previous pain experiences WEAKEN subsequent onset hyperalgesia:
+     - OH: Preceding AUC: r = -0.366
+     - OH: Preceding Max: r = -0.231
+     - OH: Preceding Min: r = -0.264
+     - OH: Preceding Normalized Pain Change: r = -0.201
+
+3. MECHANISTIC IMPLICATIONS:
+   • OPPOSITE ADAPTATION PATTERNS: OA strengthens while OH weakens
+   • Suggests different neural circuits with different plasticity rules
+   • OA system: Adaptive enhancement (gets better with experience)
+   • OH system: Protective habituation (prevents runaway sensitization)
+
+4. CLINICAL RELEVANCE:
+   • Trial-to-trial context effects reveal dynamic pain processing
+   • Individual differences in these patterns may predict pain outcomes
+   • Contrast enhancement mechanisms are not independent between trials
+
+====================================================================================================
+STATISTICAL NOTES
+====================================================================================================
+• FDR correction controls false discovery rate at 5% among significant results
+• Bonferroni correction controls family-wise error rate at 5%
+• Effect sizes: Small (0.1-0.3), Medium (0.3-0.5), Large (≥0.5)
+• All correlations calculated using Pearson's r with complete case analysis
+"""
