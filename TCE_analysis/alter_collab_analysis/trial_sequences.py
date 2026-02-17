@@ -36,7 +36,6 @@ for subject_id, trials in metrics_data.items():
         records.append(record)
 trial_metrics_df = pd.DataFrame(records)
 
-
 #%%
 # ========================================================
 # Calculate preceding trial metrics 
@@ -176,7 +175,11 @@ correlations_to_test = [
     ('offset', 'preceding_abs_normalized_pain_change', 'abs_normalized_pain_change', 
      'OA: Preceding Normalized Pain Change → Current OA', 'Preceding Normalized Pain Change (%)', 'Current Offset Analgesia (%)'),
     ('inv', 'preceding_abs_normalized_pain_change', 'abs_normalized_pain_change', 
-     'OH: Preceding Normalized Pain Change → Current OH', 'Preceding Normalized Pain Change (%)', 'Current Onset Hyperalgesia (%)')
+     'OH: Preceding Normalized Pain Change → Current OH', 'Preceding Normalized Pain Change (%)', 'Current Onset Hyperalgesia (%)'),
+     ('offset', 'preceding_auc_C', 'abs_normalized_pain_change', 
+     'OA: Preceding AUC C → Current OA', 'Preceding AUC C', 'Offset Analgesia (%)'),
+    ('inv', 'preceding_auc_C', 'abs_normalized_pain_change', 
+     'OH: Preceding AUC C → Current OH', 'Preceding AUC C', 'Onset Hyperalgesia (%)'),
 ]
 
 ################################################################################################################### First pass: collect all correlation statistics
@@ -397,9 +400,9 @@ create_correlation_scatter(
 
 
 # %%
-# ========================================================
+# ================================================================================================================
 # Comprehensive grid plot of normalized pain change vs. preceding min and max values for OA and OH trials
-# ========================================================
+# ================================================================================================================
 
 # PLOT NORMALIZED PAIN CHANGE V MIN / MAX AS A GRID FOR OFFSET AND INV TRIALS
 fig, axes = plt.subplots(2, 2, figsize=(14, 12), sharex='col', sharey='row')
@@ -475,80 +478,3 @@ plt.tight_layout(rect=[0, 0, 1, 0.99])
 plt.show()
 
 # %%
-"""====================================================================================================
-SUMMARY: PRECEDING TRIAL CONTEXT EFFECTS ON CONTRAST ENHANCEMENT
-====================================================================================================
-Test                                     r        p_raw    p_FDR    p_Bonf   n     FDR   Bonf  Effect   Direction
-----------------------------------------------------------------------------------------------------
-OA: Preceding AUC → Current OA           0.208    0.0027   0.0054   0.0271   206   **    *     Small    Positive
-OH: Preceding AUC → Current OH           -0.366   0.0000   0.0001   0.0002   130   ***   ***   Medium   Negative
-OA: Preceding Max → Current OA           0.008    0.9090   0.9090   1.0000   206   ns    ns    Negligible Positive
-OH: Preceding Max → Current OH           -0.231   0.0083   0.0138   0.0827   130   *     ns    Small    Negative
-OA: Preceding P2P → Current OA           -0.289   0.0000   0.0001   0.0002   206   ***   ***   Small    Negative
-OH: Preceding P2P → Current OH           0.050    0.5712   0.7140   1.0000   130   ns    ns    Negligible Positive
-OA: Preceding Min → Current OA           0.345    0.0000   0.0000   0.0000   206   ***   ***   Medium   Positive
-OH: Preceding Min → Current OH           -0.264   0.0024   0.0054   0.0238   130   **    *     Small    Negative
-OA: Preceding Normalized Pain Change → Current OA 0.031    0.6613   0.7348   1.0000   206   ns    ns    Negligible Positive
-OH: Preceding Normalized Pain Change → Current OH -0.201   0.0221   0.0316   0.2214   130   *     ns    Small    Negative
-
-====================================================================================================
-SIGNIFICANCE SUMMARY
-====================================================================================================
-Total tests performed: 10
-Significant after FDR correction (α = 0.05): 7/10 (70.0%)
-Significant after Bonferroni correction (α = 0.05): 5/10 (50.0%)
-
-====================================================================================================
-PATTERN ANALYSIS
-====================================================================================================
-
-OFFSET ANALGESIA (OA) - 3 significant effects:
-  ↑ OA: Preceding AUC → Current OA: r = 0.208, p_FDR = 0.0054
-  ↓ OA: Preceding P2P → Current OA: r = -0.289, p_FDR = 0.0001
-  ↑ OA: Preceding Min → Current OA: r = 0.345, p_FDR = 0.0000
-
-ONSET HYPERALGESIA (OH) - 4 significant effects:
-  ↓ OH: Preceding AUC → Current OH: r = -0.366, p_FDR = 0.0001
-  ↓ OH: Preceding Max → Current OH: r = -0.231, p_FDR = 0.0138
-  ↓ OH: Preceding Min → Current OH: r = -0.264, p_FDR = 0.0054
-  ↓ OH: Preceding Normalized Pain Change → Current OH: r = -0.201, p_FDR = 0.0316
-
-====================================================================================================
-BIOLOGICAL INTERPRETATION
-====================================================================================================
-
-KEY FINDINGS:
-
-1. OFFSET ANALGESIA ENHANCEMENT:
-   • Previous pain experiences STRENGTHEN subsequent offset analgesia:
-     - OA: Preceding AUC: r = 0.208
-     - OA: Preceding Min: r = 0.345
-   • Previous pain experiences WEAKEN subsequent offset analgesia:
-     - OA: Preceding P2P: r = -0.289
-
-2. ONSET HYPERALGESIA HABITUATION:
-   • Previous pain experiences WEAKEN subsequent onset hyperalgesia:
-     - OH: Preceding AUC: r = -0.366
-     - OH: Preceding Max: r = -0.231
-     - OH: Preceding Min: r = -0.264
-     - OH: Preceding Normalized Pain Change: r = -0.201
-
-3. MECHANISTIC IMPLICATIONS:
-   • OPPOSITE ADAPTATION PATTERNS: OA strengthens while OH weakens
-   • Suggests different neural circuits with different plasticity rules
-   • OA system: Adaptive enhancement (gets better with experience)
-   • OH system: Protective habituation (prevents runaway sensitization)
-
-4. CLINICAL RELEVANCE:
-   • Trial-to-trial context effects reveal dynamic pain processing
-   • Individual differences in these patterns may predict pain outcomes
-   • Contrast enhancement mechanisms are not independent between trials
-
-====================================================================================================
-STATISTICAL NOTES
-====================================================================================================
-• FDR correction controls false discovery rate at 5% among significant results
-• Bonferroni correction controls family-wise error rate at 5%
-• Effect sizes: Small (0.1-0.3), Medium (0.3-0.5), Large (≥0.5)
-• All correlations calculated using Pearson's r with complete case analysis
-"""

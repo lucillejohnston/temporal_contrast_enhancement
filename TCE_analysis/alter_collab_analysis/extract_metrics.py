@@ -554,6 +554,10 @@ print(f"Trial metrics saved to {OUTPUT_PATH}")
 plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv')
 
 # # Specific subject and specific control trial
-# plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv', specific_subject=117, specific_control_trial=1)
+subjects = [117, 121, 131, 144, 154, 158, 158, 161, 177]
+trials = [1, 8, 7, 9, 3, 3, 9, 7, 7]
+for subj, trial in zip(subjects, trials):
+    plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv', specific_subject=subj, specific_control_trial=trial)
+
 
 # %%

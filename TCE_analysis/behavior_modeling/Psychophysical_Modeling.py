@@ -31,7 +31,7 @@ LIMITS_DATA = DATA_PATH + 'limits_data.csv'
 # Load the raw trial data (for time series plotting)
 data_df = pd.read_json(TRIAL_DATA, orient='records')
 limits_data = pd.read_csv(LIMITS_DATA)
-# # Parameters from Petre 2017
+# # Parameters from Petre 2017 
 # petre_params = {
 #     'alpha': 2.4932,
 #     'beta': 36.7552,
