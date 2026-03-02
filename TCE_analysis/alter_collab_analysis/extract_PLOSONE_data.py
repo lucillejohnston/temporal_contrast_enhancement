@@ -1,3 +1,33 @@
+"""
+Extracts data from the PLOSONE 2020 paper
+Organizes it into a database with 4 tables: metadata, threshold_data, calibration_data, trial_data
+
+metadata: primary key is (subject, trial_num)
+- study (text)
+- subject (int)
+- trial_num (int)
+- trial_date (text) 
+
+threshold_data: primary key is subject
+- subject (int)
+- limits1 (real)
+- limits2 (real)
+- limits3 (real)
+
+calibration_data: primary key is subject
+- subject (int)
+currently a placeholder eventually will put calibration data here 
+
+trial_data: primary key is (subject, trial_num, timestamp)
+- subject (int)
+- trial_num (int)
+- trial_type (text)
+- timestamp (text)
+- temperature (real)
+- pain (real)
+- notes (text)
+
+"""
 import sqlite3
 import pandas as pd
 import os, re

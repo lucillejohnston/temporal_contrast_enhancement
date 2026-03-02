@@ -3,10 +3,12 @@ import json
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-with open('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/TCE DATA/data_from_ben/trial_data.json') as f:
+
+# Pick the dataset to preprocess
+dataset = 'kneeOA' # options: 'plosONE', 'kneeOA' (updated 2/26/26)
+with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data.json') as f:
     data = json.load(f)
 trial_data = pd.DataFrame(data)
-
 """
 'subject' - subject ID
 'trial_num' - trial number per subject/session
@@ -19,17 +21,27 @@ trial_data = pd.DataFrame(data)
 'relative_time_str' - string representation of relative time (e.g., "0.00s", "1.00s")
 'actual_time' - timestamp of each timepoint in clock time (trial_date + relative_time)
 """
-trial_key = {
-    'CLEAR calibration - pain threshold': 'calibration',
-    'Offset 45-46-45': 'offset_AV_conditioning',
-    'Offset TEST': 'offset_AV_test',
-    'CLEAR calibration LIMITS': 'limits',
-    'CLEAR-ABC1': 'offset',
-    'CLEAR-AC2': 't2_hold',
-    'CLEAR-AC3': 'inv',
-    'CLEAR-B2': 't1_hold',
-    'CLEAR-B3': 'stepdown'
-}
+if dataset == 'plosONE':
+    trial_key = {
+        'CLEAR calibration - pain threshold': 'calibration',
+        'Offset 45-46-45': 'offset_AV_conditioning',
+        'Offset TEST': 'offset_AV_test',
+        'CLEAR calibration LIMITS': 'limits',
+        'CLEAR-ABC1': 'offset',
+        'CLEAR-AC2': 't2_hold',
+        'CLEAR-AC3': 'inv',
+        'CLEAR-B2': 't1_hold',
+        'CLEAR-B3': 'stepdown'
+    }
+elif dataset == 'kneeOA':
+    trial_key = {
+        'INN': 'innocuous',
+        'T1': 't1_hold',
+        'OA': 'offset',
+        'T2': 't2_hold',
+        'OH': 'onset'
+    }
+
 trial_data['trial_type'] = trial_data['trial_type'].map(trial_key)
 #%%
 # Functions to process the data
@@ -38,34 +50,24 @@ def resample_trials(trial_df, freq='100ms'):
     Downsample a single trial DataFrame to a specified frequency (default 10Hz).
     Both 'relative_time' and 'actual_time' are downsampled/interpolated.
     """
-    # Ensure the DataFrame is sorted by the chosen time column and set it as the index
-    trial_df = trial_df.sort_values('relative_time').copy()
-    # Set index to relative_time as TimedeltaIndex for resampling
-    trial_df['relative_time'] = pd.to_timedelta(trial_df['relative_time'])
-    trial_df = trial_df.set_index('relative_time')
-
-    # Resample the DataFrame at the given frequency using mean for numeric fields.
-    df_resampled = trial_df.resample(freq).mean(numeric_only=True)
+    trial_df = trial_df.copy()
     
-    # Interpolate actual_time (convert to datetime if needed)
-    if 'actual_time' in trial_df.columns:
-        trial_df['actual_time'] = pd.to_datetime(trial_df['actual_time'])
-        trial_df = trial_df.sort_index()
-        df_resampled['actual_time'] = trial_df['actual_time'].reindex(df_resampled.index, method='nearest').values
-   
-    # Add back non-numeric columns (like trial_type)
-    for col in ['trial_type']:
-        if col in trial_df.columns:
-            df_resampled[col] = trial_df[col].dropna().iloc[0]
+    # Set actual_time as index for resampling
+    trial_df['actual_time'] = pd.to_datetime(trial_df['actual_time'])
+    trial_df = trial_df.set_index('actual_time').sort_index()
     
-    # Reset index so relative_time is a column again (in seconds)
+    # Resample numeric columns
+    numeric_cols = ['temperature', 'pain', 'relative_time']
+    df_resampled = trial_df[numeric_cols].resample(freq).mean()
+    
+    # Reset index so actual_time becomes a column again
     df_resampled = df_resampled.reset_index()
-    if np.issubdtype(df_resampled['relative_time'].dtype, np.timedelta64):
-    # Convert Timedelta to float seconds using .dt.total_seconds()
-        df_resampled['relative_time'] = df_resampled['relative_time'].dt.total_seconds()
-    else:
-    # Already float or int, just ensure float
-        df_resampled['relative_time'] = df_resampled['relative_time'].astype(float)
+   
+    # Add back non-numeric columns
+    for col in ['subject','trial_num','trial_type','study','group_label','site','spot','notes']:
+        if col in trial_df.columns:
+            df_resampled[col] = trial_df[col].dropna().iloc[0] # use the first value in each resampled bin
+    
     return df_resampled
 
 def align_trials_time(timeseries_dict, smoothing=True, smoothing_window=10,
@@ -204,98 +206,132 @@ def find_matching_calibration_trials(calibration_trials, t1_hold_trials, temp_to
     return matched_calibration
 
 #%% LOAD, DOWNSAMPLE, ALIGN TRIALS
+
 # Align data in time and make another column aligned in temperature for plotting 
 timeseries_dict = {}
 for (subject, trial_num), df in trial_data.groupby(['subject', 'trial_num']):
     timeseries_dict[(subject, trial_num)] = df
+    # Convert relative_time from string to float if not already
+    df['relative_time'] = pd.to_timedelta(df['relative_time']).dt.total_seconds()
+    timeseries_dict[(subject, trial_num)] = df
 
-# Downsample to 10Hz
-timeseries_10hz_dict = {}
-for key, df in timeseries_dict.items():
-    df_10hz = resample_trials(df, freq='100ms')
-    timeseries_10hz_dict[key] = df_10hz
+# Check the sampling rate of the data
+sampling_rates = {}
+for (subject, trial_num), df in timeseries_dict.items():
+    if len(df) > 1:
+        # Calculate time differences between consecutive samples
+        time_diffs = df['relative_time'].diff().dropna()
+        if len(time_diffs) > 0:
+            avg_sampling_interval = time_diffs.mean()
+            sampling_rate = 1.0 / avg_sampling_interval if avg_sampling_interval > 0 else None
+            if sampling_rate:
+                sampling_rates[(subject, trial_num)] = sampling_rate
+
+# Print sampling rate statistics
+if sampling_rates:
+    rates = list(sampling_rates.values())
+    print(f"Sampling rate statistics:")
+    print(f"  Min: {min(rates):.2f} Hz")
+    print(f"  Max: {max(rates):.2f} Hz")
+    print(f"  Mean: {np.mean(rates):.2f} Hz")
+    print(f"  Median: {np.median(rates):.2f} Hz")
+else:
+    print("⚠️  Unable to calculate sampling rates")
+
+# Downsample to 10Hz if needed 
+if len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) > 10:
+    print("  Downsampling to 10Hz for consistency")
+    timeseries_10hz_dict = {}
+    for key, df in timeseries_dict.items():
+        df_10hz = resample_trials(df, freq='100ms')
+        timeseries_10hz_dict[key] = df_10hz
+elif len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) == 10:
+    print("  Data already at 10Hz, no downsampling needed")
+    timeseries_10hz_dict = timeseries_dict
 
 # Align trials in time
 aligned_dict = align_trials_time(timeseries_10hz_dict, smoothing=False, smoothing_window=10)
 
 
-#%% CLEAN THE DATA
+#%% CLEAN THE DATA 
 """
-Manually go through the notes to clean data
-Also exclude any trial that never changes from 0 pain
+Cleaning is done manually by looking through the trials has to be done manually and separately for each dataset
 """
 import re
+if dataset == 'plosONE':
+    # Base note patterns:
+    base_pattern_simple = re.compile(r'^[ABC][123]\s+(proximal|medial|distal)\s+m\d+$', re.IGNORECASE)
+    base_pattern_offset = re.compile(r'^offset\d+\s+[ABC][123]\s+(proximal|medial|distal)\s+m\d+$', re.IGNORECASE)
 
-# Base note patterns:
-base_pattern_simple = re.compile(r'^[ABC][123]\s+(proximal|medial|distal)\s+m\d+$', re.IGNORECASE)
-base_pattern_offset = re.compile(r'^offset\d+\s+[ABC][123]\s+(proximal|medial|distal)\s+m\d+$', re.IGNORECASE)
+    def has_additional_info(note):
+        # Return True if the note doesn't match the basic patterns exactly.
+        # You can adjust the logic if a note might start with these patterns yet have extra text.
+        return not (base_pattern_simple.fullmatch(note) or base_pattern_offset.fullmatch(note))
 
-def has_additional_info(note):
-    # Return True if the note doesn't match the basic patterns exactly.
-    # You can adjust the logic if a note might start with these patterns yet have extra text.
-    return not (base_pattern_simple.fullmatch(note) or base_pattern_offset.fullmatch(note))
+    # Go through each trial type and extract unique extra notes:
+    selected_trial_types = trial_data['trial_type'].unique()
 
-# Go through each trial type and extract unique extra notes:
-selected_trial_types = trial_data['trial_type'].unique()
-
-for trial_type in selected_trial_types:
-    # Filter rows for the trial type and non-null notes
-    subset = trial_data[(trial_data['trial_type'] == trial_type) & (trial_data['notes'].notna())]
-    # Filter to only those rows with extra notes
-    extra_info = subset[subset['notes'].apply(has_additional_info)]
-    # Drop duplicate rows based on subject, trial_num, and notes
-    extra_info = extra_info[['subject', 'trial_num', 'notes']].drop_duplicates()
-    
-    print(f"Extra notes for trial type {trial_type}:")
-    if not extra_info.empty:
-        # Print subject_trialNum and the note for each row
-        for row in extra_info.itertuples(index=False):
-            print(f"{row.subject}_{row.trial_num}: {row.notes}")
-    else:
-        print("None found")
-    print("\n" + "-"*40 + "\n")
-
-"""
-Manually looked through notes and selected relevant ones
-Format subject_trialNum: note
-
-Extra notes for trial type CLEAR-AC2:
-154_2: A2 proximal m10 - subj requested the thermode be taken off because it was too hot
-
-Extra notes for trial type CLEAR-ABC1:
-96_3: offset2 A1 medial m8 m9 (use m9 - m8 was hit accidentally before trigger and m9 was hit a little after trigger)
-115_3: A1 medial m8 - first preconditioning trial after lowering T1 to 46
-135_2: A1 proximal m4 - first trial of preconditioning after lowering T1 to 46
-165_9: C1 distal m12 (subj said forgot to move covas to 0 once pain stopped)
-"""
-# manually plot trials with weird notes
-selected_trials = ['154_2', '96_3', '115_3', '135_2', '165_9']
-for key, df in aligned_dict.items():
-    key_str = f"{key[0]}_{key[1]}"
-    if key_str in selected_trials:
-        plt.figure(figsize=(10, 6))
+    for trial_type in selected_trial_types:
+        # Filter rows for the trial type and non-null notes
+        subset = trial_data[(trial_data['trial_type'] == trial_type) & (trial_data['notes'].notna())]
+        # Filter to only those rows with extra notes
+        extra_info = subset[subset['notes'].apply(has_additional_info)]
+        # Drop duplicate rows based on subject, trial_num, and notes
+        extra_info = extra_info[['subject', 'trial_num', 'notes']].drop_duplicates()
         
-        # Plot Temperature trace
-        plt.subplot(2, 1, 1)
-        plt.plot(df.index, df['temperature'], color='blue', label='Temperature')
-        plt.xlabel("Time (sec)")
-        plt.ylabel("Temperature")
-        plt.title(f"Trial {key_str} - Temperature")
-        plt.legend()
-        plt.grid(True)
-        
-        # Plot Pain trace
-        plt.subplot(2, 1, 2)
-        plt.plot(df.index, df['pain'], color='red', label='Pain')
-        plt.xlabel("Time (sec)")
-        plt.ylabel("Pain")
-        plt.title(f"Trial {key_str} - Pain")
-        plt.legend()
-        plt.grid(True)
-        
-        plt.tight_layout()
-        plt.show()
+        print(f"Extra notes for trial type {trial_type}:")
+        if not extra_info.empty:
+            # Print subject_trialNum and the note for each row
+            for row in extra_info.itertuples(index=False):
+                print(f"{row.subject}_{row.trial_num}: {row.notes}")
+        else:
+            print("None found")
+        print("\n" + "-"*40 + "\n")
 
+    """
+    Manually looked through notes and selected relevant ones
+    Format subject_trialNum: note
+
+    Extra notes for trial type CLEAR-AC2:
+    154_2: A2 proximal m10 - subj requested the thermode be taken off because it was too hot
+
+    Extra notes for trial type CLEAR-ABC1:
+    96_3: offset2 A1 medial m8 m9 (use m9 - m8 was hit accidentally before trigger and m9 was hit a little after trigger)
+    115_3: A1 medial m8 - first preconditioning trial after lowering T1 to 46
+    135_2: A1 proximal m4 - first trial of preconditioning after lowering T1 to 46
+    165_9: C1 distal m12 (subj said forgot to move covas to 0 once pain stopped)
+    """
+    # manually plot trials with weird notes
+    selected_trials = ['154_2', '96_3', '115_3', '135_2', '165_9']
+    for key, df in aligned_dict.items():
+        key_str = f"{key[0]}_{key[1]}"
+        if key_str in selected_trials:
+            plt.figure(figsize=(10, 6))
+            
+            # Plot Temperature trace
+            plt.subplot(2, 1, 1)
+            plt.plot(df.index, df['temperature'], color='blue', label='Temperature')
+            plt.xlabel("Time (sec)")
+            plt.ylabel("Temperature")
+            plt.title(f"Trial {key_str} - Temperature")
+            plt.legend()
+            plt.grid(True)
+            
+            # Plot Pain trace
+            plt.subplot(2, 1, 2)
+            plt.plot(df.index, df['pain'], color='red', label='Pain')
+            plt.xlabel("Time (sec)")
+            plt.ylabel("Pain")
+            plt.title(f"Trial {key_str} - Pain")
+            plt.legend()
+            plt.grid(True)
+            
+            plt.tight_layout()
+            plt.show()
+
+elif dataset == 'kneeOA':
+    print(f" I'm gonna assume that the kneeOA data was given to me cleaned")
+        
 # Find trials where pain is always zero
 zero_pain_trials = []
 for key, df in aligned_dict.items():
@@ -310,14 +346,17 @@ for key in zero_pain_trials:
     # Temperature on left y-axis
     ax1.plot(df.index, df['temperature'], color='blue', label='Temperature')
     ax1.set_xlabel("Aligned Time (s)")
+    ax1.set_xlim(0, 60)
     ax1.set_ylabel("Temperature", color='blue')
     ax1.tick_params(axis='y', labelcolor='blue')
+    ax1.set_ylim(30, 50)
     
     # Pain on right y-axis
     ax2 = ax1.twinx()
     ax2.plot(df.index, df['pain'], color='red', label='Pain')
     ax2.set_ylabel("Pain", color='red')
     ax2.tick_params(axis='y', labelcolor='red')
+    ax2.set_ylim(0, 100)
     
     plt.title(f"Pain always zero: {key_str}")
     fig.tight_layout()
@@ -342,72 +381,78 @@ print(f"\n⚠️  Excluding {len(flat_temp_trial_strs)} flat temperature trials:
 
 #%% Clean out bad trials, finalize dataframe, save to JSON
 """ 
-I manually plotted all of them and found an additional few wonky temperature curves that I'm cleaning out manually:
-offset_AV_test trials:
-154_25 - temp weirdly dropped
-126_19, 126_20, 126_21 - ramp rate was too high?
-111_14, 111_15, 111_16 - temp never did offset step
-75_13, 75_14, 75_15 - temp never did offset step
-69_13, 69_14, 69_15 - temp never did offset step
-68_13, 68_14, 68_15 - temp never did offset step
-67_15, 67_16, 67_17 - temp never did offset step
-61_14, 61_15, 61_16 - temp never did offset step
-48_15, 48_16, 48_17 - temp never did offset step
-44_13, 44_14, 44_15 - temp never did offset step
-25_14, 25_15, 25_16 - temp never did offset step
-22_14, 22_15, 22_16 - temp never did offset step
-20_14, 20_15 - temp never did offset step
-18_14, 18_15, 18_16 - temp never did offset step
-17_15, 17_16, 17_17 - temp never did offset step
-16_13, 16_14, 16_15 - temp never did offset step
-15_15, 15_16, 15_17 - temp never did offset step
-14_13, 14_14, 14_15 - temp never did offset step
-13_13, 13_14, 13_15 - temp never did offset step
-12_16, 12_17, 12_18 - temp never did offset step
-11_14, 11_15, 11_16 - temp never did offset step
-10_14, 10_15, 10_16 - temp never did offset step
-9_15, 9_16, 9_17 - temp never did offset step
-8_13, 8_14, 8_15 - temp never did offset step
-7_13 - temp weirdly dropped
-6_13, 6_14, 6_15 - temp never did offset step
+FOR PLOSONE DATASET:
+    I manually plotted all of them and found an additional few wonky temperature curves that I'm cleaning out manually:
+    offset_AV_test trials:
+    154_25 - temp weirdly dropped
+    126_19, 126_20, 126_21 - ramp rate was too high?
+    111_14, 111_15, 111_16 - temp never did offset step
+    75_13, 75_14, 75_15 - temp never did offset step
+    69_13, 69_14, 69_15 - temp never did offset step
+    68_13, 68_14, 68_15 - temp never did offset step
+    67_15, 67_16, 67_17 - temp never did offset step
+    61_14, 61_15, 61_16 - temp never did offset step
+    48_15, 48_16, 48_17 - temp never did offset step
+    44_13, 44_14, 44_15 - temp never did offset step
+    25_14, 25_15, 25_16 - temp never did offset step
+    22_14, 22_15, 22_16 - temp never did offset step
+    20_14, 20_15 - temp never did offset step
+    18_14, 18_15, 18_16 - temp never did offset step
+    17_15, 17_16, 17_17 - temp never did offset step
+    16_13, 16_14, 16_15 - temp never did offset step
+    15_15, 15_16, 15_17 - temp never did offset step
+    14_13, 14_14, 14_15 - temp never did offset step
+    13_13, 13_14, 13_15 - temp never did offset step
+    12_16, 12_17, 12_18 - temp never did offset step
+    11_14, 11_15, 11_16 - temp never did offset step
+    10_14, 10_15, 10_16 - temp never did offset step
+    9_15, 9_16, 9_17 - temp never did offset step
+    8_13, 8_14, 8_15 - temp never did offset step
+    7_13 - temp weirdly dropped
+    6_13, 6_14, 6_15 - temp never did offset step
 
-offset_AV_conditioning trials:
-11_9 - doesn't really have a baseline period starts basically right when temp ramps up
-31_3 - temp was flatlined at baseline
-36_15 - seems like a false start temp stayed at baseline and whole trial was 11s
-68_9 - doesn't realy have a baseline period starts basically right when temp ramps up
-154_26 - temp droped off and trial ended
+    offset_AV_conditioning trials:
+    11_9 - doesn't really have a baseline period starts basically right when temp ramps up
+    31_3 - temp was flatlined at baseline
+    36_15 - seems like a false start temp stayed at baseline and whole trial was 11s
+    68_9 - doesn't realy have a baseline period starts basically right when temp ramps up
+    154_26 - temp droped off and trial ended
+
+
+FOR KNEEOA DATASET:
+    I'm gonna assume the data is clean lol 
 """
-selected_trials = ['154_25','7_13','154_2', '96_3', '115_3', '135_2', 
-                   '165_9', '31_3', '36_15', '154_26'] + zero_pain_trial_strs + flat_temp_trials
-# Exclude selected trials from aligned_dict
-aligned_dict = {
-    key: df for key, df in aligned_dict.items()
-    if f"{key[0]}_{key[1]}" not in selected_trials
-}
-# Plot separate figures for each trial type:
-# Group trials by trial_type for plotting
-trial_type_groups = {}
-for key, df in aligned_dict.items():
-    # Get trial type from the dataframe
-    trial_type = df['trial_type'].dropna().iloc[0]
-    if trial_type not in trial_type_groups:
-        trial_type_groups[trial_type] = []
-    trial_type_groups[trial_type].append(df)
+if dataset == 'plosONE':
+    selected_trials = ['154_25','7_13','154_2', '96_3', '115_3', '135_2', 
+                    '165_9', '31_3', '36_15', '154_26'] + zero_pain_trial_strs + flat_temp_trials
+    # Exclude selected trials from aligned_dict
+    aligned_dict = {
+        key: df for key, df in aligned_dict.items()
+        if f"{key[0]}_{key[1]}" not in selected_trials
+    }
+    # Plot separate figures for each trial type:
+    # Group trials by trial_type for plotting
+    trial_type_groups = {}
+    for key, df in aligned_dict.items():
+        # Get trial type from the dataframe
+        trial_type = df['trial_type'].dropna().iloc[0]
+        if trial_type not in trial_type_groups:
+            trial_type_groups[trial_type] = []
+        trial_type_groups[trial_type].append(df)
 
-# Plot separate figures for each trial type
-for trial_type, dfs in trial_type_groups.items():
-    plt.figure(figsize=(10, 6))
-    for df in dfs:
-        plt.plot(df.index, df['temperature'], alpha=0.5)
-    plt.xlabel("Time from Temperature Rise Onset (seconds)")
-    plt.ylabel("Temperature (°C)")
-    plt.xlim(-15, 60)
-    plt.axvline(x=0, color='red', linestyle='--', linewidth=2, alpha=0.5, label='Rise Onset (t=0)')
-    plt.title(f"Time-Aligned Temperature Curves: {trial_type}")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+    # Plot separate figures for each trial type
+    for trial_type, dfs in trial_type_groups.items():
+        plt.figure(figsize=(10, 6))
+        for df in dfs:
+            plt.plot(df.index, df['temperature'], alpha=0.5)
+        plt.xlabel("Time from Temperature Rise Onset (seconds)")
+        plt.ylabel("Temperature (°C)")
+        plt.xlim(-15, 60)
+        plt.axvline(x=0, color='red', linestyle='--', linewidth=2, alpha=0.5, label='Rise Onset (t=0)')
+        plt.title(f"Time-Aligned Temperature Curves: {trial_type}")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
 
 # Combine all cleaned aligned data into a single DataFrame
 dfs_with_time = []
@@ -421,6 +466,7 @@ for key, df in aligned_dict.items():
 cleaned_aligned_df = pd.concat(dfs_with_time, ignore_index=True)
 
 #%% MATCH CALIBRATION TRIALS TO T1_HOLD TRIALS
+# ONLY FOR PLOSONE DATASET
 # Group aligned trials by trial_type
 aligned_by_type = {}
 for key, df in aligned_dict.items():
@@ -482,19 +528,19 @@ if matched_calibration:
     print(f"New total rows: {len(cleaned_aligned_df)}")
     print(f"\nT1_hold breakdown:")
     print(cleaned_aligned_df[cleaned_aligned_df['trial_type'] == 't1_hold']['original_trial_type'].value_counts())
-
+# ONLY FOR PLOSONE DATASET
 
 #%%
 columns_to_save = [
     'subject', 'trial_num', 'trial_type', 'temperature', 'pain',
-    'aligned_time', 'original_trial_type'
+    'aligned_time', 'original_trial_type', 'group', 'site', 'spot'
 ]
 cleaned_aligned_df = cleaned_aligned_df[[col for col in columns_to_save if col in cleaned_aligned_df.columns]]
 print(cleaned_aligned_df.head())
 print(cleaned_aligned_df.columns)
 # Save the cleaned and aligned DataFrame to a JSON file
 cleaned_aligned_df.to_json(
-    '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_cleaned_aligned.json',
+    f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json',
     orient='records',
     date_format='iso'
 )
@@ -580,7 +626,7 @@ print(f"   Average points per trial: {len(data_df_preprocessed) / len(data_df_pr
 
 # Save preprocessed data to JSON
 data_df_preprocessed.to_json(
-    '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_trimmed_downsampled.json',
+    f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_trimmed_downsampled.json',
     orient='records',
     date_format='iso'
 )
