@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import json
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, Any
 from plotting_functions import *
 
 # =========================================================
@@ -18,25 +18,31 @@ from plotting_functions import *
 # =========================================================
 
 # Path to the cleaned, aligned trial data
-DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_cleaned_aligned.json'
-OUTPUT_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_metrics.json'
+dataset = 'kneeOA' # options: 'plosONE', 'kneeOA'
+
+DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
+OUTPUT_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
 
 temp_change_offset = 0.67 # seconds, changing 1C in 1.5C/s
 window_size = 5
 period_c_duration = 20
 trial_definitions = {
-    'inv': ['T2', 'T1', 'T2'],
+    'inv': ['T2', 'T1', 'T2'], # in plosONE dataset they are called 'inv'
+    'onset': ['T2', 'T1', 'T2'], # in kneeOA dataset they are called 'offset'
     't2_hold': ['T2', 'T2', 'T2'],
-    'offset': ['T1', 'T2', 'T1'],
+    'offset': ['T1', 'T2', 'T1'], 
     't1_hold': ['T1', 'T1', 'T1'],
-    'stepdown': ['T2', 'T2', 'T1']
+    'stepdown': ['T2', 'T2', 'T1'], # in the plosONE dataset there are these stepdown trials
+    'innocuous': ['T0','T0','T0'] # in kneeOA dataset there are innocuous trials
 }
 trial_type_info = {
     'inv':      {'kind': 'stepped', 'extrema_order': ['min', 'max'], 'reference': None},
+    'onset':    {'kind': 'stepped', 'extrema_order': ['min', 'max'], 'reference': None},
     'offset':   {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
     'stepdown': {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
     't1_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['offset','stepdown']},
-    't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': 'inv'}
+    't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': 'inv'},
+    'innocuous': {'kind': 'control', 'extrema_order': ['control'],   'reference': None}
 }
 
 
@@ -199,7 +205,7 @@ def _extract_local_extrema(
         
         extrema_mode = trial_type_info[trial_type]['extrema_order']
 
-        if extrema_mode == ['min', 'max']:      # for 'inv' trials
+        if extrema_mode == ['min', 'max']:      # for 'inv'/'onset' trials
             first_val = window_series.min()
             first_time = window_series.idxmin()
             after_first = pain_series.loc[(pain_series.index > first_time) & (pain_series.index <= c_window_end)]
