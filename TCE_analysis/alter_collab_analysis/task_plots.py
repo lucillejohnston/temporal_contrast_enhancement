@@ -9,7 +9,7 @@ import numpy as np
 from matplotlib import cm
 import matplotlib.ticker as ticker
 import plotting_functions as pf
-dataset = 'plosONE' # options: 'plosONE', 'kneeOA'
+dataset = 'kneeOA' # options: 'plosONE', 'kneeOA'
 with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json') as f:
     data = json.load(f)
 df = pd.DataFrame(data)
@@ -123,12 +123,22 @@ print(f"\nTemperature alignment complete using T2 from offset trials!")
 # =============================================================
 
 # Define the trial pairs to compare
-trial_pairs = [
-    ['inv', 't2_hold'],
-    ['offset', 't1_hold'],
-    ['stepdown', 't1_hold'],
-    ['offset', 'inv']
-]
+if dataset == 'plosONE':
+    trial_pairs = [
+        ['inv', 't2_hold'],
+        ['offset', 't1_hold'],
+        ['stepdown', 't1_hold'],
+        ['offset', 'inv']
+    ]
+elif dataset == 'kneeOA':
+    trial_pairs = [
+        ['onset', 't2_hold'],
+        ['offset', 't1_hold'],
+        ['stepdown', 't1_hold'],
+        ['offset', 'onset'],
+        ['innocuous','t1_hold'],
+        ['innocuous','t2_hold']
+    ]
 
 for pair in trial_pairs:
     fig, axes = plt.subplots(
@@ -318,3 +328,5 @@ for comp in trial_pairs:
 # Add overall title
 fig.suptitle('Temperature Contrast Effects on Pain', fontsize=16, fontweight='bold', y=0.98)
 plt.show()
+
+# %%
