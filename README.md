@@ -1,6 +1,9 @@
-# temporal_contrast_enhancement
+# temporal contrast enhancement 
+By Lucille Johnston
+UCSF Neuroscience 
 
-<<<<<<< HEAD
+## TCE_analysis
+Contains all of the scripts used to analyze the TCE task (both via collaboration with Ben Alter and collected during stage 0 of sEEG trial)
 ### For alter_collab_analysis:
 1. Either extract_kneeOA_data.py or extract_PLOSONE_data.py (or other script) 
 - pull the data from the given format
@@ -32,15 +35,9 @@
 - building on trial_sequences.py, are there common trajectories of people across trials? 
 10. baseline_metrics.py
 - building on trial_sequences.py and habituators_sensizters.py, are there differences at baseline (or at the first trial) that predict the trajectory of people over time 
-=======
-By Lucille Johnston
-UCSF Neuroscience 
 
-### TCE_analysis
-Contains all of the scripts used to analyze the TCE task (both via collaboration with Ben Alter and collected during stage 0 of sEEG trial)
-
-Both model-free analyses and behavioral modeling 
 
 ### Task Scripts
 Contains all of the Python scripts used to run the TCE task using the QST.Labs TCSII device
->>>>>>> 5d634bba8747bca7c4b18a8499e1f6cf3564ff4a
+
+

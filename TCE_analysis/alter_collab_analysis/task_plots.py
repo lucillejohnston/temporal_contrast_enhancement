@@ -134,8 +134,7 @@ elif dataset == 'kneeOA':
     trial_pairs = [
         ['onset', 't2_hold'],
         ['offset', 't1_hold'],
-        ['stepdown', 't1_hold'],
-        ['offset', 'onset'],
+        ['offset','onset'],
         ['innocuous','t1_hold'],
         ['innocuous','t2_hold']
     ]
