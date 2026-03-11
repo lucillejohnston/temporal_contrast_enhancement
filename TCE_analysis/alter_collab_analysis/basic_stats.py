@@ -9,10 +9,31 @@ import seaborn as sns
 import sys, os, json
 from scipy import stats
 from plotting_functions import *  
-
+# Define the dataset
+dataset = 'kneeOA'  # options: 'plosONE', 'kneeOA'
+# When doing plosONE, be sure to change any "onset" to "inv"
+# When doing kneeOA, be sure to change any "inv" to "onset"
+# Define dataset-specific trial types and comparisons
+if dataset == 'plosONE':
+    trial_types = ['inv', 'offset', 't1_hold', 't2_hold', 'stepdown']
+    control_trials = ['t1_hold', 't2_hold']
+    stepped_trials = ['inv', 'offset', 'stepdown']
+    trial_comparisons = [
+        ('t1_hold', 'offset', 'max_val', 'T1_Hold vs Offset: Max Value', None),
+        ('t1_hold', 'stepdown', 'min_val', 'T1_Hold vs Stepdown: Min Value', None),
+        ('t2_hold', 'inv', 'max_val', 'T2_Hold vs Inv: Max Value', None)
+    ]
+elif dataset == 'kneeOA':
+    trial_types = ['onset', 'offset', 't1_hold', 't2_hold', 'innocuous']
+    control_trials = ['t1_hold', 't2_hold', 'innocuous']
+    stepped_trials = ['onset', 'offset']
+    trial_comparisons = [
+        ('t1_hold', 'offset', 'max_val', 'T1_Hold vs Offset: Max Value', None),
+        ('t2_hold', 'onset', 'max_val', 'T2_Hold vs Onset: Max Value', None),
+    ]
 # File paths
-TRIAL_METRICS_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_metrics.json'
-TRIAL_DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_cleaned_aligned.json'
+TRIAL_METRICS_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
+TRIAL_DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
 
 # Load the metrics data
 with open(TRIAL_METRICS_PATH, 'r') as f:
@@ -36,6 +57,7 @@ for subject_id, trials in metrics_data.items():
 # Convert to DataFrame
 trial_metrics_df = pd.DataFrame(records)
 time_series_df = pd.DataFrame(time_series_trial_data)
+
 
 #%%
 # ============================================================================
@@ -89,16 +111,16 @@ create_correlation_scatter(
 )
 
 ############################################################################################### Compare abs_max_val and time_yoked_max_val for control trials
-control_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(['t1_hold', 't2_hold'])].copy()
+control_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(control_trials)].copy()
 # Create temporary DataFrame for max values
 temp_max_df = pd.DataFrame({
     'time_yoked_max_combined': pd.concat([
         control_trials['time_yoked_max_val_offset'], 
-        control_trials['time_yoked_max_val_inv']
+        control_trials['time_yoked_max_val_onset'] if dataset == 'kneeOA' else control_trials['time_yoked_max_val_inv']
     ]).dropna(),
     'abs_max_combined': pd.concat([
         control_trials.loc[control_trials['time_yoked_max_val_offset'].notna(), 'abs_max_val'],
-        control_trials.loc[control_trials['time_yoked_max_val_inv'].notna(), 'abs_max_val']
+        control_trials.loc[control_trials['time_yoked_max_val_onset'].notna() if dataset == 'kneeOA' else control_trials['time_yoked_max_val_inv'].notna(), 'abs_max_val']
     ])
 }).reset_index(drop=True)
 
@@ -115,11 +137,11 @@ create_correlation_scatter(
 temp_min_df = pd.DataFrame({
     'time_yoked_min_combined': pd.concat([
         control_trials['time_yoked_min_val_offset'], 
-        control_trials['time_yoked_min_val_inv']
+        control_trials['time_yoked_min_val_onset'] if dataset == 'kneeOA' else control_trials['time_yoked_min_val_inv']
     ]).dropna(),
     'abs_min_combined': pd.concat([
         control_trials.loc[control_trials['time_yoked_min_val_offset'].notna(), 'abs_min_val'],
-        control_trials.loc[control_trials['time_yoked_min_val_inv'].notna(), 'abs_min_val']
+        control_trials.loc[control_trials['time_yoked_min_val_onset'].notna() if dataset == 'kneeOA' else control_trials['time_yoked_min_val_inv'].notna(), 'abs_min_val']
     ])
 }).reset_index(drop=True)
 
@@ -177,7 +199,10 @@ plt.show()
 ############################################################################################ Compare abs_normalized_pain_change in offset and inv trials
 # Compare abs_normalized_pain_change between offset and inv trials
 offset_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'offset'].copy()
-inv_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'inv'].copy()
+if dataset == 'plosONE':
+    inv_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'inv'].copy()
+elif dataset == 'kneeOA':
+    inv_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'onset'].copy()
 
 # Find common subjects
 common_subjects = set(offset_trials['subject']) & set(inv_trials['subject'])
@@ -187,15 +212,15 @@ inv_data = inv_trials[inv_trials['subject'].isin(common_subjects)].groupby('subj
 vals_offset = offset_data['abs_normalized_pain_change']
 vals_inv = inv_data['abs_normalized_pain_change']
 
-data = pd.DataFrame({'offset': vals_offset, 'inv': vals_inv}).dropna()
+data = pd.DataFrame({'offset': vals_offset, 'onset': vals_inv}).dropna()
 
 # Paired t-test
-tstat, pval = stats.ttest_rel(data['offset'], data['inv'])
-print(f"Offset vs Inv (abs_normalized_pain_change): n={len(data)} subjects, t={tstat:.3f}, p={pval:.4f}")
+tstat, pval = stats.ttest_rel(data['offset'], data['onset'])
+print(f"Offset vs Onset (abs_normalized_pain_change): n={len(data)} subjects, t={tstat:.3f}, p={pval:.4f}")
 
 # Plot (choose swarm or violin)
 plot_data = pd.melt(data.reset_index(), id_vars=['subject'], 
-                   value_vars=['offset', 'inv'], 
+                   value_vars=['offset', 'onset'], 
                    var_name='Trial_Type', value_name='Normalized_Pain_Change')
 
 plt.figure(figsize=(8, 6))
@@ -204,11 +229,11 @@ sns.swarmplot(data=plot_data, x='Trial_Type', y='Normalized_Pain_Change',
 
 # Add connecting lines for paired data
 for subject in data.index:
-    plt.plot([0, 1], [data.loc[subject, 'offset'], data.loc[subject, 'inv']], 
+    plt.plot([0, 1], [data.loc[subject, 'offset'], data.loc[subject, 'onset']], 
             'k-', alpha=0.3, linewidth=0.8)
 
 plt.ylabel('Absolute Normalized Pain Change (%)')
-plt.title(f'Offset vs Inv: Normalized Pain Change\n(p={pval:.4f})')
+plt.title(f'Offset vs Onset: Normalized Pain Change\n(p={pval:.4f})')
 plt.tight_layout()
 plt.show()
 
@@ -218,15 +243,15 @@ plt.show()
 # Replicate basic stats from the paper
 # ============================================================================
 ############################################################################################## Compare t1_hold vs offset/stepdown and t2_hold vs inv for max and min values Like in the paper, using time-yoked min/max
-comparisons = [
-    ('t1_hold', 'offset', 'max_val', 'T1_Hold vs Offset: Max Value', None),
-    ('t1_hold', 'stepdown', 'min_val', 'T1_Hold vs Stepdown: Min Value', None),
-    ('t2_hold', 'inv', 'max_val', 'T2_Hold vs Inv: Max Value', None)
-]
+comparisons = trial_comparisons
 for trial1, trial2, metric, label, ylims in comparisons:
     df1 = trial_metrics_df[trial_metrics_df['trial_type'] == trial1].copy()
     df2 = trial_metrics_df[trial_metrics_df['trial_type'] == trial2].copy()
-
+    if dataset == 'plosONE':
+        metric1 = f'time_yoked_{metric}_{trial2}'  # e.g., 'time_yoked_max_val_offset' or 'time_yoked_min_val_stepdown'
+    elif dataset == 'kneeOA':
+        metric1 = f'control_{metric}_{trial2}' # e.g., 'control_max_val_offset' or 'control_min_val_onset'
+    metric2 = f'abs_{metric}'  # e.g., 'abs_max_val' or 'abs_min_val'
     common_subjects = set(df1['subject']) & set(df2['subject'])
     df1 = df1[df1['subject'].isin(common_subjects)].groupby('subject').mean(numeric_only=True)
     df2 = df2[df2['subject'].isin(common_subjects)].groupby('subject').mean(numeric_only=True)
@@ -235,10 +260,10 @@ for trial1, trial2, metric, label, ylims in comparisons:
     if trial1 in ['t1_hold', 't2_hold']:  # Control trials
         if trial1 == 't1_hold' and trial2 in ['offset', 'stepdown']:
             metric1 = f'time_yoked_{metric}_{trial2}'  # e.g., 'time_yoked_min_val_offset'
-        elif trial1 == 't2_hold' and trial2 == 'inv':
-            metric1 = f'time_yoked_{metric}_inv'       # e.g., 'time_yoked_max_val_inv'
+        elif trial1 == 't2_hold' and trial2 in ['inv','onset']:
+            metric1 = f'time_yoked_{metric}_{trial2}'       # e.g., 'time_yoked_max_val_inv'
     
-    if trial2 in ['offset', 'stepdown', 'inv']:  # Stepped trials
+    if trial2 in ['offset', 'stepdown', 'inv', 'onset']:  # Stepped trials
         metric2 = f'abs_{metric}'  # e.g., 'abs_min_val' or 'abs_max_val'
     
     vals1 = df1[metric1]
@@ -281,7 +306,7 @@ def get_significance_stars(p_value):
 
 latency_comparisons = [
     ('t1_hold', 'offset', 'Latency to Max Pain: T1_Hold vs Offset'),
-    ('t2_hold', 'inv', 'Latency to Max Pain: T2_Hold vs Inv'),
+    ('t2_hold', 'inv', 'Latency to Max Pain: T2_Hold vs Inv') if dataset == 'plosONE' else ('t2_hold', 'onset', 'Latency to Max Pain: T2_Hold vs Onset'),
     ('t1_hold', 't2_hold', 'Latency to Max Pain: T1_Hold vs T2_Hold')
 ]
 
@@ -343,7 +368,10 @@ for trial1, trial2, label in latency_comparisons:
 # ======================================================================================
 # Get offset and inv trials for comparison
 offset_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'offset'].copy()
-inv_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'inv'].copy()
+if dataset == 'plosONE':
+    inv_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'inv'].copy()
+else:
+    inv_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'onset'].copy()
 
 # Find common subjects between offset and inv trials
 common_subjects = set(offset_trials['subject']) & set(inv_trials['subject'])
@@ -491,8 +519,8 @@ lme_data = trial_metrics_df.copy()
 lme_data['trial_num_centered'] = lme_data['trial_num'] - lme_data['trial_num'].mean()
 
 # Create a combined dataset for stepped trials (offset + inv)
-stepped_trials = lme_data[lme_data['trial_type'].isin(['offset', 'inv'])].copy()
-control_trials = lme_data[lme_data['trial_type'].isin(['t1_hold', 't2_hold'])].copy()
+control_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(control_trials)].copy()
+stepped_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(stepped_trials)].copy()
 
 print(f"Data summary:")
 print(f"- Total trials: {len(lme_data)}")

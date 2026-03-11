@@ -76,13 +76,19 @@ def align_temperature_for_plot(df, subject_t2_temps):
     df = df.copy()
     df['temperature'] = pd.to_numeric(df['temperature'], errors='coerce')
     subject = df['subject'].iloc[0]
-    if subject in subject_t2_temps:
-        t2_temp = subject_t2_temps[subject]
+    # Try multiple key formats to handle int/float/string mismatches
+    subject_key = None
+    for key_format in [int(float(subject)), float(subject), str(subject), subject]:
+        if key_format in subject_t2_temps:
+            subject_key = key_format
+            break
+    
+    if subject_key is not None:
+        t2_temp = subject_t2_temps[subject_key]
         df['temperature_aligned_for_plot'] = df['temperature'] - t2_temp
-        print(f"Subject {subject}: T2={t2_temp:.1f}°C")
     else:
-        print(f"Warning: T2 temperature not found for subject {subject}. No alignment applied.")
-        df['temperature_aligned_for_plot'] = df['temperature']  # Keep original if no alignment
+        print(f"Warning: T2 temperature not found for subject {subject} (type: {type(subject)}). Keys sample: {list(subject_t2_temps.keys())[:3]}")
+        df['temperature_aligned_for_plot'] = df['temperature']
     return df
 
 #%% 
@@ -152,18 +158,20 @@ for pair in trial_pairs:
         if trial_type not in time_temp_aligned_trial_type:
             continue
         dfs = time_temp_aligned_trial_type[trial_type]
-        for df in dfs:
-            subj = df['subject'].iloc[0]
+
+        for trial_df in dfs:
+            subj = trial_df['subject'].iloc[0]
             # Optionally offset t1_hold
-            temp = df['temperature_aligned_for_plot'] - 1 if trial_type == 't1_hold' else df['temperature_aligned_for_plot']
-            # axes[0].plot(df.index, temp, alpha=0.3, color=color_dict[trial_type])
+            temp = trial_df['temperature_aligned_for_plot']
+
         # Plot mean curve
         all_curves = []
         all_times = []
-        for df in dfs:
-            temp = df['temperature_aligned_for_plot'] - 1 if trial_type == 't1_hold' else df['temperature_aligned_for_plot']
+        for trial_df in dfs:
+            temp = trial_df['temperature_aligned_for_plot']
             all_curves.append(temp.values)
-            all_times.append(df.index.values)
+            all_times.append(trial_df.index.values)
+
         # Concatenate and compute mean at each unique time
         all_times_flat = np.concatenate(all_times)
         all_curves_flat = np.concatenate(all_curves)
@@ -172,8 +180,8 @@ for pair in trial_pairs:
         axes[0].plot(mean_curve.index, mean_curve['temp'], label=trial_type, color=color_dict[trial_type], linewidth=2)
     axes[0].set_ylabel("Temperature")
     axes[0].set_xlim(10, 40)
-    axes[0].set_ylim(-1.5, 1)
-    axes[0].set_title(f"Avg Aligned Temperature: {pair[0]} vs {pair[1]}")
+    axes[0].set_ylim((-18, 1) if 'innocuous' in pair else (-1.5, 1))
+    axes[0].set_title(f"Avg Aligned Temperature: {pair[0]} vs {pair[1]} ({dataset})")
     axes[0].legend()
     axes[0].grid(True)
 
@@ -187,8 +195,8 @@ for pair in trial_pairs:
         # Plot mean curve
         time_grid = np.arange(-15, 40, 0.1)
         all_interp_curves = []
-        for df in dfs:
-            interp_curve = np.interp(time_grid, df.index.values, df['pain'].values)
+        for trial_df in dfs:
+            interp_curve = np.interp(time_grid, trial_df.index.values, trial_df['pain'].values)
             all_interp_curves.append(interp_curve)
         all_interp_curves = np.array(all_interp_curves)
         mean_curve = np.mean(all_interp_curves, axis=0)
@@ -198,8 +206,8 @@ for pair in trial_pairs:
     axes[1].set_xlabel("Aligned Time (s)")
     axes[1].set_ylabel("Pain")
     axes[1].set_xlim(10, 40)
-    axes[1].set_ylim(10, 70)
-    axes[1].set_title(f"Average Pain Curves: {pair[0]} vs {pair[1]}")
+    axes[1].set_ylim((0, 70) if 'innocuous' in pair else (10, 70))
+    axes[1].set_title(f"Average Pain Curves: {pair[0]} vs {pair[1]} ({dataset})")
     axes[1].legend()
     axes[1].grid(True)
 
@@ -208,124 +216,126 @@ for pair in trial_pairs:
     plt.close(fig)
 
 
-#%% 
-# ============================================================
-# Create a 2x2 grid of comparison plots
-# ============================================================
+# #%% 
+# # ============================================================
+# # Create a 2x2 grid of comparison plots
+# # ============================================================
 
-fig = plt.figure(figsize=(16, 10))
-gs = fig.add_gridspec(2, 2, height_ratios=[1, 3], hspace=0.25, wspace=0.25)
+# fig = plt.figure(figsize=(16, 10))
+# gs = fig.add_gridspec(2, 2, height_ratios=[1, 3], hspace=0.25, wspace=0.25)
 
-color_map = plt.get_cmap('tab10')
+# color_map = plt.get_cmap('tab10')
 
-for comp in trial_pairs:
-    pair = comp['pair']
-    col = comp['col']
+# for comp in trial_pairs:
+#     pair = comp['pair']
+#     col = comp['col']
     
-    # Create axes for this column
-    ax_temp = fig.add_subplot(gs[0, col])
-    ax_pain = fig.add_subplot(gs[1, col])
+#     # Create axes for this column
+#     ax_temp = fig.add_subplot(gs[0, col])
+#     ax_pain = fig.add_subplot(gs[1, col])
     
-    color_dict = {k: color_map(i) for i, k in enumerate(pair)}
+#     color_dict = {k: color_map(i) for i, k in enumerate(pair)}
     
-    # Top: Plot temperature traces
-    for trial_type in pair:
-        if trial_type not in time_temp_aligned_trial_type:
-            continue
-        dfs = time_temp_aligned_trial_type[trial_type]
+#     # Top: Plot temperature traces
+#     for trial_type in pair:
+#         if trial_type not in time_temp_aligned_trial_type:
+#             continue
+#         dfs = time_temp_aligned_trial_type[trial_type]
         
-        # Plot mean curve
-        all_curves = []
-        all_times = []
-        for df in dfs:
-            # Optionally offset t1_hold
-            if trial_type == 't1_hold':
-                temp = df['temperature_aligned_for_plot'] - 1
-                display_label = 't1_hold'
-            else:
-                temp = df['temperature_aligned_for_plot']
-                display_label = trial_type
-            all_curves.append(temp.values)
-            all_times.append(df.index.values)
+#         # Plot mean curve
+#         all_curves = []
+#         all_times = []
+#         for df in dfs:
+#             # Optionally offset t1_hold
+#             if trial_type == 't1_hold':
+#                 temp = df['temperature_aligned_for_plot'] - 1
+#                 display_label = 't1_hold'
+#             else:
+#                 temp = df['temperature_aligned_for_plot']
+#                 display_label = trial_type
+#             all_curves.append(temp.values)
+#             all_times.append(df.index.values)
         
-        # Concatenate and compute mean at each unique time
-        all_times_flat = np.concatenate(all_times)
-        all_curves_flat = np.concatenate(all_curves)
-        mean_df = pd.DataFrame({'time': all_times_flat, 'temp': all_curves_flat})
-        mean_curve = mean_df.groupby('time').mean().sort_index()
+#         # Concatenate and compute mean at each unique time
+#         all_times_flat = np.concatenate(all_times)
+#         all_curves_flat = np.concatenate(all_curves)
+#         mean_df = pd.DataFrame({'time': all_times_flat, 'temp': all_curves_flat})
+#         mean_curve = mean_df.groupby('time').mean().sort_index()
         
-        label = display_label if trial_type == 't1_hold_combined' else trial_type
-        ax_temp.plot(mean_curve.index, mean_curve['temp'], label=label, 
-                    color=color_dict[trial_type], linewidth=2)
+#         label = display_label if trial_type == 't1_hold_combined' else trial_type
+#         ax_temp.plot(mean_curve.index, mean_curve['temp'], label=label, 
+#                     color=color_dict[trial_type], linewidth=2)
     
-    ax_temp.set_ylabel("Temperature (°C)", fontsize=11)
-    ax_temp.set_xlim(-5, 30)
-    ax_temp.set_ylim(-1.5, 0.5)
-    pair_display = [p if p != 't1_hold_combined' else 't1_hold' for p in pair]
-    ax_temp.set_title(comp['title'], fontsize=13, fontweight='bold')
-    ax_temp.legend(fontsize=10)
-    ax_temp.grid(True, alpha=0.3)
+#     ax_temp.set_ylabel("Temperature (°C)", fontsize=11)
+#     ax_temp.set_xlim(-5, 30)
+#     ax_temp.set_ylim(-1.5, 0.5)
+#     pair_display = [p if p != 't1_hold_combined' else 't1_hold' for p in pair]
+#     ax_temp.set_title(comp['title'], fontsize=13, fontweight='bold')
+#     ax_temp.legend(fontsize=10)
+#     ax_temp.grid(True, alpha=0.3)
     
-    # Bottom: Plot pain traces
-    for trial_type in pair:
-        if trial_type not in time_temp_aligned_trial_type:
-            continue
-        dfs = time_temp_aligned_trial_type[trial_type]
+#     # Bottom: Plot pain traces
+#     for trial_type in pair:
+#         if trial_type not in time_temp_aligned_trial_type:
+#             continue
+#         dfs = time_temp_aligned_trial_type[trial_type]
         
-        # Plot mean curve with better handling of missing data
-        time_grid = np.arange(-15, 40, 0.1)
-        all_interp_curves = []
+#         # Plot mean curve with better handling of missing data
+#         time_grid = np.arange(-15, 40, 0.1)
+#         all_interp_curves = []
         
-        for df in dfs:
-            # Only interpolate within the valid time range of each trial
-            valid_mask = (time_grid >= df.index.min()) & (time_grid <= df.index.max())
-            interp_curve = np.full(len(time_grid), np.nan)
+#         for df in dfs:
+#             # Only interpolate within the valid time range of each trial
+#             valid_mask = (time_grid >= df.index.min()) & (time_grid <= df.index.max())
+#             interp_curve = np.full(len(time_grid), np.nan)
             
-            if valid_mask.any() and len(df['pain']) > 0:
-                # Remove NaN values before interpolation
-                valid_data = df['pain'].dropna()
-                if len(valid_data) > 1:
-                    interp_curve[valid_mask] = np.interp(
-                        time_grid[valid_mask], 
-                        valid_data.index.values, 
-                        valid_data.values,
-                        left=np.nan,
-                        right=np.nan
-                    )
-            all_interp_curves.append(interp_curve)
+#             if valid_mask.any() and len(df['pain']) > 0:
+#                 # Remove NaN values before interpolation
+#                 valid_data = df['pain'].dropna()
+#                 if len(valid_data) > 1:
+#                     interp_curve[valid_mask] = np.interp(
+#                         time_grid[valid_mask], 
+#                         valid_data.index.values, 
+#                         valid_data.values,
+#                         left=np.nan,
+#                         right=np.nan
+#                     )
+#             all_interp_curves.append(interp_curve)
         
-        if len(all_interp_curves) > 0:
-            all_interp_curves = np.array(all_interp_curves)
+#         if len(all_interp_curves) > 0:
+#             all_interp_curves = np.array(all_interp_curves)
             
-            # Compute mean and SEM only where we have data
-            with np.errstate(invalid='ignore'):  # Suppress warnings for all-NaN slices
-                mean_curve = np.nanmean(all_interp_curves, axis=0)
-                n_valid = np.sum(~np.isnan(all_interp_curves), axis=0)
-                sem_curve = np.nanstd(all_interp_curves, axis=0, ddof=1) / np.sqrt(n_valid)
+#             # Compute mean and SEM only where we have data
+#             with np.errstate(invalid='ignore'):  # Suppress warnings for all-NaN slices
+#                 mean_curve = np.nanmean(all_interp_curves, axis=0)
+#                 n_valid = np.sum(~np.isnan(all_interp_curves), axis=0)
+#                 sem_curve = np.nanstd(all_interp_curves, axis=0, ddof=1) / np.sqrt(n_valid)
                 
-                # Only plot where we have at least 3 trials contributing
-                valid_points = n_valid >= 3
+#                 # Only plot where we have at least 3 trials contributing
+#                 valid_points = n_valid >= 3
                 
-                label = 't1_hold' if trial_type == 't1_hold_combined' else trial_type
-                ax_pain.plot(time_grid[valid_points], mean_curve[valid_points], 
-                           label=f"{label} (n={len(dfs)})", 
-                           color=color_dict[trial_type], linewidth=2)
-                ax_pain.fill_between(
-                    time_grid[valid_points], 
-                    (mean_curve - 1.96*sem_curve)[valid_points], 
-                    (mean_curve + 1.96*sem_curve)[valid_points], 
-                    color=color_dict[trial_type], alpha=0.2
-                )
+#                 label = 't1_hold' if trial_type == 't1_hold_combined' else trial_type
+#                 ax_pain.plot(time_grid[valid_points], mean_curve[valid_points], 
+#                            label=f"{label} (n={len(dfs)})", 
+#                            color=color_dict[trial_type], linewidth=2)
+#                 ax_pain.fill_between(
+#                     time_grid[valid_points], 
+#                     (mean_curve - 1.96*sem_curve)[valid_points], 
+#                     (mean_curve + 1.96*sem_curve)[valid_points], 
+#                     color=color_dict[trial_type], alpha=0.2
+#                 )
     
-    ax_pain.set_xlabel("Aligned Time (s)", fontsize=11)
-    ax_pain.set_ylabel("Pain Rating", fontsize=11)
-    ax_pain.set_xlim(-5, 30)
-    ax_pain.set_ylim(0, 80)
-    ax_pain.legend(fontsize=10)
-    ax_pain.grid(True, alpha=0.3)
+#     ax_pain.set_xlabel("Aligned Time (s)", fontsize=11)
+#     ax_pain.set_ylabel("Pain Rating", fontsize=11)
+#     ax_pain.set_xlim(-5, 30)
+#     ax_pain.set_ylim(0, 80)
+#     ax_pain.legend(fontsize=10)
+#     ax_pain.grid(True, alpha=0.3)
 
-# Add overall title
-fig.suptitle('Temperature Contrast Effects on Pain', fontsize=16, fontweight='bold', y=0.98)
-plt.show()
+# # Add overall title
+# fig.suptitle('Temperature Contrast Effects on Pain', fontsize=16, fontweight='bold', y=0.98)
+# plt.show()
+
+# # %%
 
 # %%

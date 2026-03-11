@@ -5,10 +5,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.ticker as ticker
-with open('/userdata/ljohnston/TCE_analysis/data_from_ben/trial_data.json') as f:
+# Updated 2026-03-10 now it only works for the kneeOA data not sure what is going on with the plosONE data since I've re-preprocessed it
+# But it takes literally FOREVER to load in the .json 
+dataset = 'kneeOA' # options: 'plosONE', 'kneeOA'
+with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data.json') as f:
     data = json.load(f)
 df = pd.DataFrame(data)
-sys.path.append('/userdata/ljohnston/TCE_analysis/data_from_ben/')
+df['actual_time'] = pd.to_datetime(df['actual_time'])
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/')
 import plotting_functions as pf
 # %%
 # Now plot temperature and pain over actual_time for a random subject
@@ -57,10 +61,9 @@ if 'trial_num' in filtered_df.columns and 'trial_type' in filtered_df.columns:
 
 plt.title(f'Temperature and Pain Over Time for Subject {random_subject}')
 fig.tight_layout()  # for proper layout
-plt.savefig(f'/userdata/ljohnston/TCE_analysis/data_from_ben/whole_session_example.svg', dpi=300)
 plt.show()
 
-# %%
+# %% Plot a single trial for the same subject
 trials = filtered_df['trial_num'].unique()
 random_trial = np.random.choice(trials) # Select a random trial for the filtered subject
 trial_df = filtered_df[filtered_df['trial_num'] == random_trial]
@@ -96,3 +99,5 @@ fig.tight_layout()
 plt.show()
 
 
+
+# %%

@@ -12,9 +12,11 @@ from statsmodels.stats.multitest import multipletests
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from plotting_functions import *  
 
+dataset = 'kneeOA' # options: 'kneeOA', 'plosONE'
+inv_label = 'onset' if dataset == 'kneeOA' else 'inv' # Label for onset hyperalgesia trials based on dataset
 # File paths
-TRIAL_METRICS_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_metrics.json'
-TRIAL_DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_cleaned_aligned.json'
+TRIAL_METRICS_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
+TRIAL_DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
 
 # Load the metrics data
 with open(TRIAL_METRICS_PATH, 'r') as f:
@@ -95,7 +97,7 @@ for new_col, source_col in preceding_metrics.items():
 # Preliminary plots of OA/OH trials by preceding trial type
 # ========================================================
 # Filter for OA/OH trials
-oa_oh_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(['offset', 'inv'])].copy()
+oa_oh_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(['offset', inv_label])].copy()
 
 # Violin plot of abs_max_val in OA/OH trials, separated by preceding trial type
 plt.figure(figsize=(8, 6))
@@ -125,16 +127,17 @@ plt.ylabel('Normalized Pain Change (%)')
 plt.tight_layout()
 plt.show()
 
-# Plot normalized pain change for 'inv' trials
+# Plot normalized pain change for 'onset' trials
 plt.figure(figsize=(8, 6))
 sns.violinplot(
-    data=oa_oh_trials[oa_oh_trials['trial_type'] == 'inv'],
+    data=oa_oh_trials[oa_oh_trials['trial_type'] == inv_label],
     x='preceding_trial_type',
     y='abs_normalized_pain_change'
 )
-plt.title('Inv trials: Normalized pain change by preceding trial type')
+plt.title(f'{inv_label.capitalize()} trials: Normalized pain change by preceding trial type')
 plt.xlabel('Preceding Trial Type')
 plt.ylabel('Normalized Pain Change (%)')
+plt.ylim(-200, 300) 
 plt.tight_layout()
 plt.show()
 
@@ -144,7 +147,7 @@ plt.show()
 # normalized_pain_change (as metric of OH/OA) vs auc_total, abs_max_val, abs_min_val
 # ========================================================================================
 # Filter for OA/OH trials
-oa_oh_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(['offset', 'inv'])].copy()
+oa_oh_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(['offset', inv_label])].copy()
 
 # Store all correlation results for multiple comparisons correction
 correlation_results = []
@@ -158,27 +161,27 @@ correlations_to_test = [
     # Format: (trial_type, x_col, y_col, description, xlabel, ylabel)
     ('offset', 'preceding_auc_total', 'abs_normalized_pain_change', 
      'OA: Preceding AUC → Current OA', 'Preceding AUC Total', 'Offset Analgesia (%)'),
-    ('inv', 'preceding_auc_total', 'abs_normalized_pain_change', 
+    (inv_label, 'preceding_auc_total', 'abs_normalized_pain_change', 
      'OH: Preceding AUC → Current OH', 'Preceding AUC Total', 'Onset Hyperalgesia (%)'),
     ('offset', 'preceding_abs_max_val', 'abs_normalized_pain_change', 
      'OA: Preceding Max → Current OA', 'Preceding Max Pain', 'Offset Analgesia (%)'),
-    ('inv', 'preceding_abs_max_val', 'abs_normalized_pain_change', 
+    (inv_label, 'preceding_abs_max_val', 'abs_normalized_pain_change', 
      'OH: Preceding Max → Current OH', 'Preceding Max Pain', 'Onset Hyperalgesia (%)'),
     ('offset', 'preceding_abs_peak_to_peak', 'abs_normalized_pain_change', 
      'OA: Preceding P2P → Current OA', 'Preceding Peak-to-Peak', 'Offset Analgesia (%)'),
-    ('inv', 'preceding_abs_peak_to_peak', 'abs_normalized_pain_change', 
+    (inv_label, 'preceding_abs_peak_to_peak', 'abs_normalized_pain_change', 
      'OH: Preceding P2P → Current OH', 'Preceding Peak-to-Peak', 'Onset Hyperalgesia (%)'),
     ('offset', 'preceding_abs_min_val', 'abs_normalized_pain_change', 
      'OA: Preceding Min → Current OA', 'Preceding Min Pain', 'Offset Analgesia (%)'),
-    ('inv', 'preceding_abs_min_val', 'abs_normalized_pain_change', 
+    (inv_label, 'preceding_abs_min_val', 'abs_normalized_pain_change', 
      'OH: Preceding Min → Current OH', 'Preceding Min Pain', 'Onset Hyperalgesia (%)'),
     ('offset', 'preceding_abs_normalized_pain_change', 'abs_normalized_pain_change', 
      'OA: Preceding Normalized Pain Change → Current OA', 'Preceding Normalized Pain Change (%)', 'Current Offset Analgesia (%)'),
-    ('inv', 'preceding_abs_normalized_pain_change', 'abs_normalized_pain_change', 
+    (inv_label, 'preceding_abs_normalized_pain_change', 'abs_normalized_pain_change', 
      'OH: Preceding Normalized Pain Change → Current OH', 'Preceding Normalized Pain Change (%)', 'Current Onset Hyperalgesia (%)'),
      ('offset', 'preceding_auc_C', 'abs_normalized_pain_change', 
      'OA: Preceding AUC C → Current OA', 'Preceding AUC C', 'Offset Analgesia (%)'),
-    ('inv', 'preceding_auc_C', 'abs_normalized_pain_change', 
+    (inv_label, 'preceding_auc_C', 'abs_normalized_pain_change', 
      'OH: Preceding AUC C → Current OH', 'Preceding AUC C', 'Onset Hyperalgesia (%)'),
 ]
 
@@ -345,7 +348,7 @@ create_correlation_scatter(
 
 # Find the first 'inv' trial for each subject
 first_inv_trials = (
-    oa_oh_trials[oa_oh_trials['trial_type'] == 'inv']
+    oa_oh_trials[oa_oh_trials['trial_type'] == inv_label]
     .sort_values(['subject', 'trial_num'])
     .groupby('subject')
     .first()
@@ -408,12 +411,12 @@ create_correlation_scatter(
 fig, axes = plt.subplots(2, 2, figsize=(14, 12), sharex='col', sharey='row')
 
 # Define trial types and metrics
-trial_types = ['offset', 'inv']
+trial_types = ['offset', inv_label]
 metrics = ['preceding_abs_min_val', 'preceding_abs_max_val']
 metric_labels = ['Preceding Min Value', 'Preceding Max Value']
 
 # Color scheme
-colors = {'offset': 'blue', 'inv': 'red'}
+colors = {'offset': 'blue', inv_label: 'red'}
 
 for row_idx, ttype in enumerate(trial_types):
     subset = oa_oh_trials[oa_oh_trials['trial_type'] == ttype]

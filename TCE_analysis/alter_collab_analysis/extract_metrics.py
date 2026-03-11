@@ -41,7 +41,7 @@ trial_type_info = {
     'offset':   {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
     'stepdown': {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
     't1_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['offset','stepdown']},
-    't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': 'inv'},
+    't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['inv','onset']},
     'innocuous': {'kind': 'control', 'extrema_order': ['control'],   'reference': None}
 }
 
@@ -60,6 +60,10 @@ df = pd.read_json(DATA_PATH, orient='records')
 # pain - pain rating at each time point 
 # aligned_time - 10Hz sampled time, aligned to trial start 
 # temperature_aligned_for_plot - temperature shifted for plotting
+
+# for kneeOA data, filter for site == forearm
+if dataset == 'kneeOA': 
+    df = df[df['site'] == 'forearm'].copy()
 
 #%%
 # =========================================================
@@ -343,8 +347,9 @@ def calc_normalized_pain_change(row, use_time_yoked=True):
         max_val = row.get('abs_max_val')
         if pd.notnull(min_val) and pd.notnull(max_val) and max_val !=0:
             return (min_val - max_val) / max_val * 100 
-    elif tt == 'inv':
-        # For inv trials: (max - min) / max * 100
+    
+    elif tt in ['inv','onset']:
+        # For inv/onset trials: (max - min) / max * 100
         min_val = row.get('abs_min_val')
         max_val = row.get('abs_max_val')
         if pd.notnull(min_val) and pd.notnull(max_val) and max_val !=0:
@@ -360,10 +365,10 @@ def calc_normalized_pain_change(row, use_time_yoked=True):
         if pd.notnull(min_val) and pd.notnull(max_val) and max_val !=0:
             return (min_val - max_val) / max_val * 100
     elif tt == 't2_hold':
-        # t2_hold references 'inv'
+        # t2_hold references 'inv' ---- practically, I don't really care about stepdown trials yet 
         if use_time_yoked:
-            min_val = row.get('time_yoked_min_val_inv')
-            max_val = row.get('time_yoked_max_val_inv')
+            min_val = row.get('time_yoked_min_val_onset' if dataset == 'kneeOA' else 'time_yoked_min_val_inv')
+            max_val = row.get('time_yoked_max_val_onset' if dataset == 'kneeOA' else 'time_yoked_max_val_inv')
         else:
             min_val = row.get('abs_min_val')
             max_val = row.get('abs_max_val')
@@ -453,11 +458,14 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
                 min_diff_idx = np.argmin(trial_num_diffs)
                 ref_trial_num = ref_trial_nums[min_diff_idx]
             else:
-                ref_trial_num = np.nan
-                
-            reference_times = subject_extrema_times.get(
-                (int(subject), str(ref), int(ref_trial_num)), 
-                {'abs_min_time': np.nan, 'abs_max_time': np.nan})
+                ref_trial_num = None 
+
+            if ref_trial_num is not None:
+                reference_times = subject_extrema_times.get(
+                    (int(subject), str(ref), int(ref_trial_num)), 
+                    {'abs_min_time': np.nan, 'abs_max_time': np.nan})
+            else:
+                reference_times = {'abs_min_time': np.nan, 'abs_max_time': np.nan}
             extrema = extract_extrema(
                 pain_series, trial_type, mode='control', 
                 reference_times=reference_times, base_offset=trial_ramp_time)
@@ -492,12 +500,13 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
             min_diff_idx = np.argmin(trial_num_diffs)
             ref_trial_num = ref_trial_nums[min_diff_idx]
         else:
-            ref_trial_num = np.nan
-
-        reference_times = subject_extrema_times.get(
-            (int(subject), str(ref), int(ref_trial_num)), 
-            {'abs_min_time': np.nan, 'abs_max_time': np.nan})
-        
+            ref_trial_num = None
+        if ref_trial_num is not None:
+            reference_times = subject_extrema_times.get(
+                (int(subject), str(ref), int(ref_trial_num)), 
+                {'abs_min_time': np.nan, 'abs_max_time': np.nan})
+        else:
+                reference_times = {'abs_min_time': np.nan, 'abs_max_time': np.nan}
         extrema = extract_extrema(
             pain_series, trial_type, mode='control', 
             reference_times=reference_times, base_offset=trial_ramp_time)
@@ -557,13 +566,13 @@ print(f"Trial metrics saved to {OUTPUT_PATH}")
 # ========================================================
 
 # Random selection (original behavior)
-plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv')
+plot_trial_comparison(structured_data, df, 'onset', 't2_hold', 'onset')
 
-# # Specific subject and specific control trial
-subjects = [117, 121, 131, 144, 154, 158, 158, 161, 177]
-trials = [1, 8, 7, 9, 3, 3, 9, 7, 7]
-for subj, trial in zip(subjects, trials):
-    plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv', specific_subject=subj, specific_control_trial=trial)
+# # # Specific subject and specific control trial
+# subjects = [117, 121, 131, 144, 154, 158, 158, 161, 177]
+# trials = [1, 8, 7, 9, 3, 3, 9, 7, 7]
+# for subj, trial in zip(subjects, trials):
+#     plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv', specific_subject=subj, specific_control_trial=trial)
 
 
 # %%
