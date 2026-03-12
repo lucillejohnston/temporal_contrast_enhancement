@@ -60,9 +60,9 @@ preceding_metrics = {
     'preceding_abs_min_val': 'abs_min_val',
     'preceding_abs_peak_to_peak': 'abs_peak_to_peak',
     'preceding_time_yoked_max_val_offset': 'time_yoked_max_val_offset',
-    'preceding_time_yoked_min_val_offset': 'time_yoked_min_val_inv',
+    'preceding_time_yoked_min_val_offset': f'time_yoked_min_val_{inv_label}',
     'preceding_time_yoked_peak_to_peak_offset': 'time_yoked_peak_to_peak_offset',
-    'preceding_time_yoked_min_val_inv': 'time_yoked_min_val_inv',
+    f'preceding_time_yoked_min_val_{inv_label}': f'time_yoked_min_val_{inv_label}',
     'preceding_auc_A': 'auc_A',
     'preceding_auc_B': 'auc_B',
     'preceding_auc_C': 'auc_C',
@@ -76,15 +76,15 @@ for trial_type in trial_metrics_df['trial_type'].unique():
         # Add time-yoked metrics based on trial type
         if trial_type == 't1_hold':
             # t1_hold can reference offset or stepdown
-            for ref_type in ['offset', 'stepdown']:
+            for ref_type in ['offset']:
                 preceding_metrics[f'preceding_time_yoked_max_val_{ref_type}'] = f'time_yoked_max_val_{ref_type}'
                 preceding_metrics[f'preceding_time_yoked_min_val_{ref_type}'] = f'time_yoked_min_val_{ref_type}'
                 preceding_metrics[f'preceding_time_yoked_peak_to_peak_{ref_type}'] = f'time_yoked_peak_to_peak_{ref_type}'
         elif trial_type == 't2_hold':
             # t2_hold references inv
-            preceding_metrics['preceding_time_yoked_max_val_inv'] = 'time_yoked_max_val_inv'
-            preceding_metrics['preceding_time_yoked_min_val_inv'] = 'time_yoked_min_val_inv'
-            preceding_metrics['preceding_time_yoked_peak_to_peak_inv'] = 'time_yoked_peak_to_peak_inv'
+            preceding_metrics[f'preceding_time_yoked_max_val_{inv_label}'] = f'time_yoked_max_val_{inv_label}'
+            preceding_metrics[f'preceding_time_yoked_min_val_{inv_label}'] = f'time_yoked_min_val_{inv_label}'
+            preceding_metrics[f'preceding_time_yoked_peak_to_peak_{inv_label}'] = f'time_yoked_peak_to_peak_{inv_label}'
 
 for new_col, source_col in preceding_metrics.items():
     trial_metrics_df[new_col] = trial_metrics_df.apply(

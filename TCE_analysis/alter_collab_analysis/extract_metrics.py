@@ -35,15 +35,22 @@ trial_definitions = {
     'stepdown': ['T2', 'T2', 'T1'], # in the plosONE dataset there are these stepdown trials
     'innocuous': ['T0','T0','T0'] # in kneeOA dataset there are innocuous trials
 }
-trial_type_info = {
-    'inv':      {'kind': 'stepped', 'extrema_order': ['min', 'max'], 'reference': None},
-    'onset':    {'kind': 'stepped', 'extrema_order': ['min', 'max'], 'reference': None},
-    'offset':   {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
-    'stepdown': {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
-    't1_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['offset','stepdown']},
-    't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['inv','onset']},
-    'innocuous': {'kind': 'control', 'extrema_order': ['control'],   'reference': None}
-}
+if dataset == 'plosONE':
+    trial_type_info = {
+        'inv':      {'kind': 'stepped', 'extrema_order': ['min', 'max'], 'reference': None},
+        'offset':   {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
+        'stepdown': {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
+        't1_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['offset','stepdown']},
+        't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': 'inv'},
+    }
+elif dataset == 'kneeOA':
+    trial_type_info = {
+        'onset':    {'kind': 'stepped', 'extrema_order': ['min', 'max'], 'reference': None},
+        'offset':   {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
+        't1_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['offset']},
+        't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['onset']},
+        'innocuous': {'kind': 'control', 'extrema_order': ['control'],   'reference': None}
+    }
 
 
 # Load data
@@ -227,10 +234,10 @@ def _extract_local_extrema(
             min_val, min_time = second_val, second_time
         else:
             raise ValueError(f"Unknown extrema order for trial_type={trial_type}: {extrema_mode}")
-        
+        min_val = max(min_val, 0) # floor at 0
         peak_to_peak = abs(second_val - first_val) if not (np.isnan(second_val) or np.isnan(first_val)) else np.nan
         peak_to_peak_latency = second_time - first_time if not (np.isnan(second_time) or np.isnan(first_time)) else np.nan
-
+        
         return {
             # Only return absolute values for experimental trials
             'abs_min_val': min_val, 
@@ -466,6 +473,7 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
                     {'abs_min_time': np.nan, 'abs_max_time': np.nan})
             else:
                 reference_times = {'abs_min_time': np.nan, 'abs_max_time': np.nan}
+            # TEMP debugging prints to verify correct reference trial selection
             extrema = extract_extrema(
                 pain_series, trial_type, mode='control', 
                 reference_times=reference_times, base_offset=trial_ramp_time)
@@ -565,14 +573,77 @@ print(f"Trial metrics saved to {OUTPUT_PATH}")
 # TRIAL COMPARISON PLOTTING
 # ========================================================
 
-# Random selection (original behavior)
-plot_trial_comparison(structured_data, df, 'onset', 't2_hold', 'onset')
+# # Random selection (original behavior)
+# plot_trial_comparison(structured_data, df, 'onset', 't2_hold', 'onset')
 
 # # # Specific subject and specific control trial
 # subjects = [117, 121, 131, 144, 154, 158, 158, 161, 177]
 # trials = [1, 8, 7, 9, 3, 3, 9, 7, 7]
 # for subj, trial in zip(subjects, trials):
 #     plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv', specific_subject=subj, specific_control_trial=trial)
+plot_trial_comparison(structured_data, df, 'onset','t2_hold','onset', specific_subject=7, specific_control_trial=7)
 
+# %%
+# Debugging weird trials
+# Let's find the trial that actually has >1000%
+print("=== FINDING TRIALS WITH EXTREME NORMALIZED PAIN CHANGE ===")
+
+extreme_trials = []
+for subject_id, trials in structured_data.items():
+    for trial_num, trial_data in trials.items():
+        abs_change = trial_data.get('abs_normalized_pain_change')
+        time_yoked_change = trial_data.get('time_yoked_normalized_pain_change')
+        
+        if abs_change and abs(abs_change) > 500:
+            extreme_trials.append((subject_id, trial_num, 'abs', abs_change, trial_data))
+        
+        if time_yoked_change and abs(time_yoked_change) > 500:
+            extreme_trials.append((subject_id, trial_num, 'time_yoked', time_yoked_change, trial_data))
+
+print(f"Found {len(extreme_trials)} trials with >500% change:")
+for subject_id, trial_num, change_type, change_val, trial_data in extreme_trials[:5]:  # Show first 5
+    print(f"Subject {subject_id}, Trial {trial_num} ({trial_data['trial_type']}): {change_type} = {change_val:.1f}%")
+    print(f"  abs_min: {trial_data.get('abs_min_val')}, abs_max: {trial_data.get('abs_max_val')}")
+    if 'time_yoked' in change_type:
+        ref_type = 'onset' if 'onset' in str(trial_data.keys()) else 'offset'
+        print(f"  time_yoked_min: {trial_data.get(f'time_yoked_min_val_{ref_type}')}")
+        print(f"  time_yoked_max: {trial_data.get(f'time_yoked_max_val_{ref_type}')}")
+    print()
+
+# Print all of the things for weird trials
+subject = 7 
+trial_num = 6  # or whichever trial is showing the weird result
+
+print("=== DEBUGGING NORMALIZED PAIN CHANGE ===")
+
+# Get the trial data
+trial_data = structured_data[subject][trial_num]
+print(f"Trial type: {trial_data['trial_type']}")
+
+# Check all the extrema values
+print(f"abs_min_val: {trial_data.get('abs_min_val')}")
+print(f"abs_max_val: {trial_data.get('abs_max_val')}")
+print(f"abs_peak_to_peak: {trial_data.get('abs_peak_to_peak')}")
+
+# Check time-yoked values too
+time_yoked_min = trial_data.get('time_yoked_min_val_onset')
+time_yoked_max = trial_data.get('time_yoked_max_val_onset')
+print(f"time_yoked_min_val_onset: {time_yoked_min}")
+print(f"time_yoked_max_val_onset: {time_yoked_max}")
+
+# Calculate what the function would return
+print(f"\nNormalized pain change calculations:")
+print(f"abs_normalized_pain_change: {trial_data.get('abs_normalized_pain_change')}")
+print(f"time_yoked_normalized_pain_change: {trial_data.get('time_yoked_normalized_pain_change')}")
+
+# Manual calculation for abs values
+if trial_data.get('abs_max_val') and trial_data.get('abs_max_val') != 0:
+    manual_calc = (trial_data['abs_max_val'] - trial_data['abs_min_val']) / trial_data['abs_max_val'] * 100
+    print(f"Manual abs calculation: ({trial_data['abs_max_val']} - {trial_data['abs_min_val']}) / {trial_data['abs_max_val']} * 100 = {manual_calc}")
+
+# Manual calculation for time-yoked values
+if time_yoked_max and time_yoked_max != 0:
+    manual_calc_ty = (time_yoked_max - time_yoked_min) / time_yoked_max * 100
+    print(f"Manual time-yoked calculation: ({time_yoked_max} - {time_yoked_min}) / {time_yoked_max} * 100 = {manual_calc_ty}")
 
 # %%

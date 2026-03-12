@@ -241,7 +241,7 @@ def plot_trial_comparison(structured_data, df, stepped_type, control_type, refer
     Args:
         structured_data: Dictionary with trial metrics organized by subject/trial_num
         df: DataFrame with raw trial data
-        stepped_type: 'offset' or 'inv'
+        stepped_type: 'offset' or 'inv' OR 'onset' 
         control_type: 't1_hold' or 't2_hold'
         reference_suffix: 'offset', 'inv', etc. for column naming
         specific_subject: Optional specific subject ID to plot (if None, picks random)
@@ -315,10 +315,8 @@ def plot_trial_comparison(structured_data, df, stepped_type, control_type, refer
         print(f"Using first available control trial: {control_trial_num}")
     
     # Get reference column name
-    if control_type == 't1_hold':
-        ref_col = f'reference_trial_num_{reference_suffix}'
-    else:  # t2_hold
-        ref_col = 'reference_trial_num'
+    ref_col = f'reference_trial_num_{reference_suffix}'
+
     
     referenced_stepped_num = control_trial.get(ref_col)
     print(f"{control_type} trial {control_trial_num} references {stepped_type} trial {referenced_stepped_num}")

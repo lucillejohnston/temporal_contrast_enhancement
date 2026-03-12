@@ -10,9 +10,12 @@ import json
 from scipy import stats
 from plotting_functions import *  
 
+# dataset
+dataset = 'kneeOA' # options: 'kneeOA', 'plosONE', 'combined'
+
 # File paths
-TRIAL_METRICS_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_metrics.json'
-TRIAL_DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_data_cleaned_aligned.json'
+TRIAL_METRICS_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
+TRIAL_DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
 FIG_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/'
 # Load the metrics data
 with open(TRIAL_METRICS_PATH, 'r') as f:
@@ -36,6 +39,11 @@ for subject_id, trials in metrics_data.items():
 # Convert to DataFrame
 trial_metrics_df = pd.DataFrame(records)
 time_series_df = pd.DataFrame(time_series_trial_data)
+
+if dataset == 'kneeOA':
+    stepped_trial_types = ['offset','onset']
+elif dataset == 'plosONE':
+    stepped_trial_types = ['offset', 'inv']
 # %% 
 # =====================================================================
 # Determine habituators vs. sensitizers based on pain trajectory
@@ -113,6 +121,9 @@ def classify_subject(row):
         return 'no_trend'
 
 trajectory_df['classification'] = trajectory_df.apply(classify_subject, axis=1)
+
+# Look at distribution of classifications based on group labels
+
 # %%
 # ==========================================================================
 # Split into HABITUATORS vs. SENSITIZERS and PLOT EXAMPLE for each 
@@ -184,7 +195,7 @@ plt.show()
 # Filter for just habituators and sensitizers, and OA/OH trials
 context_analysis_df = trial_metrics_df[
     (trial_metrics_df['trajectory_group'].isin(['habituator', 'sensitizer'])) &
-    (trial_metrics_df['trial_type'].isin(['offset', 'inv']))
+    (trial_metrics_df['trial_type'].isin(stepped_trial_types))
 ].copy()
 
 # Add both preceding max and min pain
@@ -198,7 +209,7 @@ context_analysis_df['preceding_abs_min_val'] = context_analysis_df.groupby('subj
 print("=== ONSET HYPERALGESIA (INV) - Preceding MAX Pain ===")
 for group in ['habituator', 'sensitizer']:
     subset = context_analysis_df[
-        (context_analysis_df['trial_type'] == 'inv') & 
+        (context_analysis_df['trial_type'] == stepped_trial_types[1]) & # 'inv' for plosONE, 'onset' for kneeOA
         (context_analysis_df['trajectory_group'] == group)
     ]
     
@@ -216,7 +227,7 @@ for group in ['habituator', 'sensitizer']:
 print("\n=== OFFSET ANALGESIA (OFFSET) - Preceding MIN Pain ===")
 for group in ['habituator', 'sensitizer']:
     subset = context_analysis_df[
-        (context_analysis_df['trial_type'] == 'offset') & 
+        (context_analysis_df['trial_type'] == stepped_trial_types[0]) & # 'offset' for both datasets
         (context_analysis_df['trajectory_group'] == group)
     ]
     
@@ -236,7 +247,7 @@ fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
 ############## OH - Habituators (top left)
 subset = context_analysis_df[
-    (context_analysis_df['trial_type'] == 'inv') & 
+    (context_analysis_df['trial_type'] == stepped_trial_types[1]) & 
     (context_analysis_df['trajectory_group'] == 'habituator')
 ]
 clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
@@ -263,7 +274,7 @@ axes[0,0].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}',
 
 ############## OH - Sensitizers (top right)
 subset = context_analysis_df[
-    (context_analysis_df['trial_type'] == 'inv') & 
+    (context_analysis_df['trial_type'] == stepped_trial_types[1]) & 
     (context_analysis_df['trajectory_group'] == 'sensitizer')
 ]
 clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
@@ -290,7 +301,7 @@ axes[0,1].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}',
 
 ############## OA - Habituators (bottom left)
 subset = context_analysis_df[
-    (context_analysis_df['trial_type'] == 'offset') & 
+    (context_analysis_df['trial_type'] == stepped_trial_types[0]) & 
     (context_analysis_df['trajectory_group'] == 'habituator')
 ]
 clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
@@ -317,7 +328,7 @@ axes[1,0].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}',
 
 ############### OA - Sensitizers (bottom right)
 subset = context_analysis_df[
-    (context_analysis_df['trial_type'] == 'offset') & 
+    (context_analysis_df['trial_type'] == stepped_trial_types[0]) & 
     (context_analysis_df['trajectory_group'] == 'sensitizer')
 ]
 clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
@@ -354,14 +365,14 @@ plt.savefig(f'{FIG_PATH}preceding_min_max_effects_by_trajectory_group.svg', dpi=
 
 # Filter for OH/OA trials only and merge with trajectory classifications
 oh_oa_data = trial_metrics_df[
-    (trial_metrics_df['trial_type'].isin(['offset', 'inv'])) &
+    (trial_metrics_df['trial_type'].isin(stepped_trial_types)) &
     (trial_metrics_df['trajectory_group'].isin(['habituator', 'sensitizer']))
 ].copy()
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
 # OH (inv) trials
-oh_data = oh_oa_data[oh_oa_data['trial_type'] == 'inv']
+oh_data = oh_oa_data[oh_oa_data['trial_type'] == stepped_trial_types[1]] # 'inv' for plosONE, 'onset' for kneeOA
 if len(oh_data) > 0:
     sns.violinplot(data=oh_data, x='trajectory_group', y='abs_normalized_pain_change',
                    palette={'habituator': 'blue', 'sensitizer': 'red'}, inner='box', ax=axes[0])
@@ -378,7 +389,7 @@ if len(oh_data) > 0:
         print(f"OH: Habituators mean={hab_oh.mean():.2f}, Sensitizers mean={sen_oh.mean():.2f}, p={p_val:.3f}")
 
 # OA (offset) trials  
-oa_data = oh_oa_data[oh_oa_data['trial_type'] == 'offset']
+oa_data = oh_oa_data[oh_oa_data['trial_type'] == stepped_trial_types[0]] # 'offset' for both datasets
 if len(oa_data) > 0:
     sns.violinplot(data=oa_data, x='trajectory_group', y='abs_normalized_pain_change',
                    palette={'habituator': 'blue', 'sensitizer': 'red'}, inner='box', ax=axes[1])
@@ -442,3 +453,152 @@ result = model.fit(reml=False)
 print(result.summary())
 
 # %%
+
+#%%
+# =========================================================
+# GET GROUP INFO DIRECTLY FROM SQL DATABASE
+# =========================================================
+
+import sqlite3
+
+sql_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/combined_data.sqlite'
+
+print(f"=== QUERYING SQL DATABASE FOR GROUP INFO ===")
+
+try:
+    conn = sqlite3.connect(sql_path)
+    
+    # Simple query to get unique subject-group mappings
+    query = '''
+    SELECT DISTINCT 
+        subject,
+        COALESCE(NULLIF("group", ""), 'control') AS group_label
+    FROM metadata 
+    WHERE study = ?
+    ORDER BY subject
+    '''
+    
+    subject_groups_df = pd.read_sql_query(query, conn, params=(dataset,))
+    conn.close()
+    
+    print(f"✅ Retrieved group info for {len(subject_groups_df)} subjects")
+    print(f"Group distribution:")
+    print(subject_groups_df['group_label'].value_counts())
+    
+    # Show first few rows
+    print(f"\nFirst 10 subjects:")
+    print(subject_groups_df.head(10))
+    
+    # Merge with trial_metrics_df
+    print(f"\nMerging with trial_metrics_df...")
+    print(f"Before merge: trial_metrics_df shape = {trial_metrics_df.shape}")
+    
+    trial_metrics_df = trial_metrics_df.merge(
+        subject_groups_df, 
+        on='subject', 
+        how='left'
+    )
+    
+    print(f"After merge: trial_metrics_df shape = {trial_metrics_df.shape}")
+    
+    # Check for missing group labels
+    missing_groups = trial_metrics_df['group_label'].isna().sum()
+    if missing_groups > 0:
+        print(f"⚠️ {missing_groups} trials missing group labels")
+        missing_subjects = trial_metrics_df[trial_metrics_df['group_label'].isna()]['subject'].unique()
+        print(f"Subjects missing group labels: {missing_subjects}")
+    else:
+        print(f"✅ All subjects have group labels!")
+    
+    print(f"\n🎉 SUCCESS! Final group distribution in trial_metrics_df:")
+    print(trial_metrics_df['group_label'].value_counts())
+    
+except Exception as e:
+    print(f"❌ Error querying database: {e}")
+#%%
+# =========================================================
+# PLOT SLOPE DISTRIBUTION WITH CLINICAL GROUPS OVERLAID
+# =========================================================
+
+# Make sure we have the slopes_df with group_label
+# Merge group_label into slopes_df if not already there
+if 'group_label' not in slopes_df.columns:
+    slopes_df = slopes_df.merge(
+        trial_metrics_df[['subject', 'group_label']].drop_duplicates(), 
+        on='subject', 
+        how='left'
+    )
+
+print("=== SLOPE DISTRIBUTION BY CLINICAL GROUP ===")
+print("Slopes per group:")
+print(slopes_df['group_label'].value_counts())
+
+# Create the plot
+plt.figure(figsize=(12, 8))
+
+# Define colors for each group
+group_colors = {
+    'control': 'blue',
+    'low_pain': 'green', 
+    'high_pain': 'red'
+}
+
+# Plot histogram for each group
+for group in slopes_df['group_label'].unique():
+    group_data = slopes_df[slopes_df['group_label'] == group]['slope']
+    plt.hist(group_data, bins=15, alpha=0.6, 
+             color=group_colors.get(group, 'gray'), 
+             label=f'{group} (n={len(group_data)})',
+             edgecolor='black', linewidth=0.5)
+
+# Add reference line at zero
+plt.axvline(x=0, color='black', linestyle='--', linewidth=2, label='No change')
+
+# Add labels and formatting
+plt.xlabel('Max Pain Slope (points per trial)', fontsize=12)
+plt.ylabel('Number of Subjects', fontsize=12)
+plt.title('Distribution of Individual Pain Trajectories by Clinical Group', fontsize=14)
+plt.legend(fontsize=11)
+plt.grid(True, alpha=0.3)
+
+# Add some statistics text
+stats_text = []
+for group in sorted(slopes_df['group_label'].unique()):
+    group_data = slopes_df[slopes_df['group_label'] == group]['slope']
+    mean_slope = group_data.mean()
+    std_slope = group_data.std()
+    stats_text.append(f'{group}: μ={mean_slope:.2f}, σ={std_slope:.2f}')
+
+plt.text(0.02, 0.98, '\n'.join(stats_text), 
+         transform=plt.gca().transAxes, 
+         verticalalignment='top',
+         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+         fontsize=10)
+
+plt.tight_layout()
+plt.savefig(f'{FIG_PATH}slope_distribution_by_clinical_group.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# Print detailed statistics
+print("\n=== DETAILED STATISTICS BY GROUP ===")
+for group in sorted(slopes_df['group_label'].unique()):
+    group_data = slopes_df[slopes_df['group_label'] == group]['slope']
+    print(f"\n{group.upper()}:")
+    print(f"  N subjects: {len(group_data)}")
+    print(f"  Mean slope: {group_data.mean():.3f}")
+    print(f"  Std slope: {group_data.std():.3f}")
+    print(f"  Sensitizers (slope > 0): {(group_data > 0).sum()} ({(group_data > 0).mean()*100:.1f}%)")
+    print(f"  Habituators (slope < 0): {(group_data < 0).sum()} ({(group_data < 0).mean()*100:.1f}%)")
+
+# Statistical comparison between groups
+from scipy import stats
+
+print(f"\n=== STATISTICAL COMPARISONS ===")
+groups = sorted(slopes_df['group_label'].unique())
+for i, group1 in enumerate(groups):
+    for group2 in groups[i+1:]:
+        data1 = slopes_df[slopes_df['group_label'] == group1]['slope']
+        data2 = slopes_df[slopes_df['group_label'] == group2]['slope']
+        
+        t_stat, p_val = stats.ttest_ind(data1, data2)
+        print(f"{group1} vs {group2}: t={t_stat:.3f}, p={p_val:.3f}")
