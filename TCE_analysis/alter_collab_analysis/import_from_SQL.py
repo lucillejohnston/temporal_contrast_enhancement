@@ -1,6 +1,6 @@
 """
 This script imports data from the SQL database back into a workable format for analysis
-Updated 2/27/26 to extract the kneeOA data as well
+Updated 4/1/26 to extract the cLBP data as well
 
 Do preprocessing.py next 
 """
@@ -97,16 +97,36 @@ def extract_study_data(sql_path, study_name):
         # Create trial_order (1-based indexing per subject)
         df['trial_order'] = df.groupby('subject')['trial_num'].transform(lambda x: pd.factorize(x)[0] + 1)
     
+    elif study_name in ['cLBP_DPOP', 'cLBP_MBPR']:
+        # cLBP has numeric timestamps (seconds from start)
+        df['trial_timestamp'] = pd.to_numeric(df['trial_timestamp'], errors='coerce')
+        
+        # Parse visit information from notes
+        df['visit'] = df['notes'].str.extract(r'visit_(\d+)').astype(int)
+        
+        # Create trial_order (1-based indexing per subject)
+        df['trial_order'] = df.groupby('subject')['trial_num'].transform(lambda x: pd.factorize(x)[0] + 1)
     return df
 
 
-# Extract plosONE data (rename your existing file)
-print("=== EXTRACTING PLOSONE DATA ===")
-plosone_df = extract_study_data(sql_path, 'plosONE')
+# # Extract plosONE data (rename your existing file)
+# print("=== EXTRACTING PLOSONE DATA ===")
+# plosone_df = extract_study_data(sql_path, 'plosONE')
 
-# Extract kneeOA data
-print("\n=== EXTRACTING KNEEOA DATA ===")
-kneeoa_df = extract_study_data(sql_path, 'kneeOA')
+# # Extract kneeOA data
+# print("\n=== EXTRACTING KNEEOA DATA ===")
+# kneeoa_df = extract_study_data(sql_path, 'kneeOA')
+
+# Extract cLBP data
+# Extract cLBP data - both studies
+print("\n=== EXTRACTING CLBP DATA ===")
+clbp_dpop_df = extract_study_data(sql_path, 'cLBP_DPOP')
+clbp_mbpr_df = extract_study_data(sql_path, 'cLBP_MBPR')
+
+# Combine them
+clbp_df = pd.concat([clbp_dpop_df, clbp_mbpr_df], ignore_index=True)
+print(f"Combined cLBP data: {len(clbp_df)} records")
+print(f"Studies: {clbp_df['study'].value_counts()}")
 
 #%% Check data quality
 def build_timestamps(df, study_name):
@@ -120,7 +140,8 @@ def build_timestamps(df, study_name):
     elif study_name == 'kneeOA':
         df['trial_timestamp'] = pd.to_numeric(df['trial_timestamp'], errors='coerce')
         df['relative_time'] = pd.to_timedelta(df['trial_timestamp'], unit='s')
-
+    elif study_name == 'cLBP':
+        df['relative_time'] = pd.to_timedelta(df['trial_timestamp'], unit='s')
     df['relative_time_str'] = df['relative_time'].astype(str).str.replace(r'^0 days ', '', regex=True)
     df['actual_time'] = df['trial_date'] + df['relative_time']
     df['trial_order'] = df.groupby('subject')['trial_num'].transform(lambda x: pd.factorize(x)[0] + 1)
@@ -169,17 +190,20 @@ def check_data_quality(df, study_name):
     return diffs
 
 # Build timestamps and check quality
-plosone_df = build_timestamps(plosone_df, 'plosONE')
-kneeoa_df  = build_timestamps(kneeoa_df,  'kneeOA')
+# plosone_df = build_timestamps(plosone_df, 'plosONE')
+# kneeoa_df  = build_timestamps(kneeoa_df,  'kneeOA')
+clbp_df    = build_timestamps(clbp_df,    'cLBP')
 
-plosone_diffs = check_data_quality(plosone_df, 'plosONE')
-kneeoa_diffs  = check_data_quality(kneeoa_df,  'kneeOA')
+# plosone_diffs = check_data_quality(plosone_df, 'plosONE')
+# kneeoa_diffs  = check_data_quality(kneeoa_df,  'kneeOA')
+clbp_diffs    = check_data_quality(clbp_df,    'cLBP')
 
 
 #%% Save cleaned extracted data as a JSON
-plosone_df.to_json(f'{save_dir}plosONE_trial_data.json', orient='records', date_format='iso')
-kneeoa_df.to_json(f'{save_dir}kneeOA_trial_data.json', orient='records', date_format='iso')
-print("Saved both datasets to JSON")
+# plosone_df.to_json(f'{save_dir}plosONE_trial_data.json', orient='records', date_format='iso')
+# kneeoa_df.to_json(f'{save_dir}kneeOA_trial_data.json', orient='records', date_format='iso')
+clbp_df.to_json(f'{save_dir}cLBP_trial_data.json', orient='records', date_format='iso')
+print("Saved all datasets to JSON")
 
 
 # %%

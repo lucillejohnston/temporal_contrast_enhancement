@@ -99,5 +99,142 @@ fig.tight_layout()
 plt.show()
 
 
+# %%
+# Create a plot of all 4 trial types in a series
 
 # %%
+def find_all_trial_series(df, required_types=['OA', 'OH', 'T1', 'T2']):
+    """Find all possible series and return them"""
+    all_matches = []
+    subjects = df['subject'].unique()
+    
+    for subject in subjects:
+        subject_df = df[df['subject'] == subject].copy()
+        trials = sorted(subject_df['trial_num'].unique())
+        
+        for i in range(len(trials) - 3):
+            trial_group = trials[i:i+4]
+            trial_types = []
+            for trial in trial_group:
+                trial_data = subject_df[subject_df['trial_num'] == trial]
+                if not trial_data.empty:
+                    trial_types.append(trial_data['trial_type'].iloc[0])
+            
+            if set(trial_types) == set(required_types):
+                all_matches.append((subject, trial_group, trial_types))
+    
+    return all_matches
+# Find all matches
+all_options = find_all_trial_series(df)
+print(f"Found {len(all_options)} total matches:")
+for i, (subj, trials, types) in enumerate(all_options[:5]):  # Show first 5
+    print(f"Option {i}: Subject {subj}, Trials {trials}, Types {types}")
+
+# Pick one (change the index to try different ones)
+if all_options:
+    subject, trial_series, trial_types = all_options[8]  # Change 0 to 1, 2, etc.
+
+# Plot the series
+subject_df = df[df['subject'] == subject]
+filtered_df = subject_df[subject_df['trial_num'].isin(trial_series)].copy()
+filtered_df = filtered_df.sort_values('actual_time')
+
+fig, ax1 = plt.subplots(figsize=(16, 8))
+
+# Temperature plot
+color_temp = 'tab:blue'
+ax1.set_xlabel('Actual Clock Time', fontsize=12)
+ax1.set_ylabel('Temperature (°C)', color=color_temp, fontsize=12)
+ax1.plot(filtered_df['actual_time'], filtered_df['temperature'], 
+         color=color_temp, linewidth=1.5, alpha=0.8)
+ax1.tick_params(axis='y', labelcolor=color_temp)
+ax1.xaxis.set_major_locator(ticker.MaxNLocator(12))
+
+# Pain plot
+ax2 = ax1.twinx()
+color_pain = 'tab:red'
+ax2.set_ylabel('Pain Rating', color=color_pain, fontsize=12)
+ax2.plot(filtered_df['actual_time'], filtered_df['pain'], 
+         color=color_pain, linewidth=1.5, alpha=0.8)
+ax2.tick_params(axis='y', labelcolor=color_pain)
+ax2.set_ylim(0, 100)
+
+# Add trial boundaries and labels
+trial_groups = filtered_df.groupby('trial_num')
+for trial_num, group in trial_groups:
+    trial_type = group['trial_type'].iloc[0]
+    start_time = group['actual_time'].iloc[0]
+    mid_time = group['actual_time'].iloc[len(group)//2]
+    
+    ax1.axvline(x=start_time, color='gray', linestyle='--', alpha=0.7)
+    ax1.annotate(f'Trial {trial_num}\n{trial_type}',
+                xy=(mid_time, 1.05), xycoords=('data', 'axes fraction'),
+                ha='center', fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.3", fc="lightblue", alpha=0.8))
+
+# Final boundary
+final_group = list(trial_groups)[-1][1]
+ax1.axvline(x=final_group['actual_time'].iloc[-1], color='gray', linestyle='--', alpha=0.7)
+plt.title(f'4-Trial Series: Temperature and Pain Over Time - Subject {subject}', fontsize=14)
+plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+fig.tight_layout()
+plt.savefig('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/Example4Trials.svg')
+
+
+plt.show()
+
+
+
+
+# %%
+# %%
+# Plot 1: Large change in pain
+fig, ax = plt.subplots(figsize=(8, 6))
+
+ax.set_ylim(-100, 100)
+ax.set_xlim(0, 10)
+ax.axhline(y=0, color='black', linestyle='--', alpha=0.7, linewidth=1)
+ax.set_ylabel('Δ Pain', fontsize=16)
+ax.set_xlabel('Within-Trial Time', fontsize=12)
+ax.set_title('Large Pain Response', fontsize=18, fontweight='bold')
+
+# Large diverging arrows
+ax.annotate('', xy=(8, 80), xytext=(2, 0), 
+           arrowprops=dict(arrowstyle='->', lw=4, color='red'))
+ax.annotate('', xy=(8, -80), xytext=(2, 0), 
+           arrowprops=dict(arrowstyle='->', lw=4, color='blue'))
+
+# Add labels
+ax.text(8.5, 80, '+80', fontsize=14, ha='left', va='center', color='red', fontweight='bold')
+ax.text(8.5, -80, '-80', fontsize=14, ha='left', va='center', color='blue', fontweight='bold')
+
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('LargePainResponse.svg', dpi=300, bbox_inches='tight')
+plt.show()
+
+# %%
+# Plot 2: Small change in pain
+fig, ax = plt.subplots(figsize=(8, 6))
+
+ax.set_ylim(-100, 100)
+ax.set_xlim(0, 10)
+ax.axhline(y=0, color='black', linestyle='--', alpha=0.7, linewidth=1)
+ax.set_ylabel('Δ Pain', fontsize=16)
+ax.set_xlabel('Within-Trial Time', fontsize=12)
+ax.set_title('Small Pain Response', fontsize=18, fontweight='bold')
+
+# Small diverging arrows
+ax.annotate('', xy=(8, 20), xytext=(2, 0), 
+           arrowprops=dict(arrowstyle='->', lw=4, color='red'))
+ax.annotate('', xy=(8, -20), xytext=(2, 0), 
+           arrowprops=dict(arrowstyle='->', lw=4, color='blue'))
+
+# Add labels
+ax.text(8.5, 20, '+20', fontsize=14, ha='left', va='center', color='red', fontweight='bold')
+ax.text(8.5, -20, '-20', fontsize=14, ha='left', va='center', color='blue', fontweight='bold')
+
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('SmallPainResponse.svg', dpi=300, bbox_inches='tight')
+plt.show()

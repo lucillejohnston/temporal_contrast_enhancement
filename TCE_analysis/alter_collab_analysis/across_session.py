@@ -1,4 +1,5 @@
 #%%
+# OLD SCRIPT THESE PLOTS ARE SUPER UGLY
 """
 Section 1: Load the data and import relevant packages
 """

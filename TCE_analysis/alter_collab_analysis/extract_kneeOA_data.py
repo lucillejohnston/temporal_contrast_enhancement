@@ -43,7 +43,8 @@ kneeOA_data_path = '/Users/ljohnston1/UCSF DBS for Pain Dropbox/PainNeuromodulat
 data_raw = scipy.io.loadmat(kneeOA_data_path)
 subject_info_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/kneeOA_subject_groups.mat'
 subject_groups = scipy.io.loadmat(subject_info_path)['subject_groups_struct'][0,0]
-
+group_path = '/Users/ljohnston1/UCSF DBS for Pain Dropbox/PainNeuromodulationLab/DATA ANALYSIS/Lucy/BenAlter_Collab_Data/KneeNIRS data/kneeNIRS dataset from MMtrimmedcsv250107.xlsx'
+group_data = pd.read_excel(group_path)
 
 all_trial_info = trial_metadata['all_trial_info']
 print(f"Loaded trial info structure: {type(all_trial_info)}")
@@ -52,8 +53,7 @@ data = data_raw['data']
 ohoa_data = data['OHOA'][0, 0]
 subject_fields = [field for field in ohoa_data.dtype.names if field.startswith('subj')]
 study_ids = np.squeeze(subject_groups['study_id']).astype(int)
-group_cells = np.squeeze(subject_groups['group'])
-groups = [str(np.squeeze(g)) for g in group_cells]
+groups = group_data['grp3nrs_now'].values.astype(str)
 subject_info_df = pd.DataFrame({
     'subject': study_ids,
     'group_label': groups,

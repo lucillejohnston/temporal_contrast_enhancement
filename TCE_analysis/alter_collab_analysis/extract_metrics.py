@@ -18,7 +18,7 @@ from plotting_functions import *
 # =========================================================
 
 # Path to the cleaned, aligned trial data
-dataset = 'kneeOA' # options: 'plosONE', 'kneeOA'
+dataset = 'plosONE' # options: 'plosONE', 'kneeOA'
 
 DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
 OUTPUT_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
@@ -235,7 +235,7 @@ def _extract_local_extrema(
         else:
             raise ValueError(f"Unknown extrema order for trial_type={trial_type}: {extrema_mode}")
         min_val = max(min_val, 0) # floor at 0
-        peak_to_peak = abs(second_val - first_val) if not (np.isnan(second_val) or np.isnan(first_val)) else np.nan
+        peak_to_peak = (second_val - first_val) if not (np.isnan(second_val) or np.isnan(first_val)) else np.nan
         peak_to_peak_latency = second_time - first_time if not (np.isnan(second_time) or np.isnan(first_time)) else np.nan
         
         return {
@@ -308,14 +308,21 @@ def _extract_control_extrema(
             time_yoked_max_val = np.nan
 
         # Peak to peak for time-yoked extrema
-        time_yoked_peak_to_peak = abs(time_yoked_max_val - time_yoked_min_val) if not (
+        time_yoked_peak_to_peak = (time_yoked_max_val - time_yoked_min_val) if not (
             np.isnan(time_yoked_max_val) or np.isnan(time_yoked_min_val)) else np.nan
         time_yoked_peak_to_peak_latency = ref_max_time - ref_min_time if not (
             np.isnan(ref_max_time) or np.isnan(ref_min_time)) else np.nan
 
-        # Peak to peak for absolute extrema
-        abs_peak_to_peak = abs(abs_max_val - abs_min_val) if not (
-            np.isnan(abs_max_val) or np.isnan(abs_min_val)) else np.nan
+        # Peak to peak for absolute extrema (preserving sign based on time order)
+        if not (np.isnan(abs_max_val) or np.isnan(abs_min_val)):
+            # First in time minus second in time
+            if abs_max_time < abs_min_time:
+                abs_peak_to_peak = abs_max_val - abs_min_val
+            else:
+                abs_peak_to_peak = abs_min_val - abs_max_val
+        else:
+            abs_peak_to_peak = np.nan
+
         abs_peak_to_peak_latency = abs_min_time - abs_max_time if not (
             np.isnan(abs_min_time) or np.isnan(abs_max_time)) else np.nan
 
