@@ -35,13 +35,29 @@ import pandas as pd
 import numpy as np
 import scipy.io 
 import sqlite3
+import matplotlib.pyplot as plt
 
 # Load in the DPOP and MBPR data
 data_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/cLBP_raw_extracted.mat'
 raw_data = scipy.io.loadmat(data_path)
+info_path = '/Users/ljohnston1/UCSF DBS for Pain Dropbox/PainNeuromodulationLab/DATA ANALYSIS/Lucy/BenAlter_Collab_Data/cLBP_Strigo/MYP_DPOP_MBPR_DATA_09062023.csv'
+info_df = pd.read_csv(info_path)
 # Extract the subjects data
 extracted_data = raw_data['extracted_data']
 subjects_data = extracted_data['subjects'][0, 0]
+#%% Extract group labels from lowbackpainint 
+lbp_scores = pd.to_numeric(info_df['lowbackpainint'], errors='coerce')
+# Create a histogram of lbp_scores
+plt.figure(figsize=(10, 6))
+plt.hist(lbp_scores, bins=10, color='skyblue', edgecolor='black')
+plt.title('Distribution of Low Back Pain Intensity Scores', fontsize=16)
+plt.xlabel('Low Back Pain Intensity', fontsize=14)
+plt.ylabel('Frequency', fontsize=14)
+# add lines for mild/moderate/severe cutoffs
+median_score = lbp_scores.median()
+plt.axvline(x=median_score, color='red', linestyle='--', label=f'Mild/Moderate cutoff (median={median_score:.1f})')
+plt.axvline
+plt.show()
 
 #%% Process all subjects with visit-aware trial numbering
 # Basically make second visit trials 101-112 instead of 1-12, so we can keep them in the same table without duplicates and easily identify them later
@@ -82,15 +98,24 @@ for subj_idx, subj in enumerate(subjects_data):
     for trial_num, (start_time, end_time) in enumerate(trial_boundaries, start=1):
         # Identify pain_times that align with trial boundaries
         boundary_mask = (pain_times == start_time / 1000.0) | (pain_times == end_time / 1000.0)
-        
-        # Adjust boundary-aligned pain_times
-        pain_times[boundary_mask & (pain_times == start_time / 1000.0)] += adjustment  # Move forward
-        pain_times[boundary_mask & (pain_times == end_time / 1000.0)] -= adjustment  # Move backward
+        if len(pain_times) != len(pain_values):
+            print(f"Warning: pain_times and pain_values length mismatch for subject {subject_id}, trial {trial_num}. Skipping boundary adjustment.")
+        else:
+            # Adjust boundary-aligned pain_times
+            pain_times[boundary_mask] += adjustment
 
         # Mask data for this trial
         pain_mask = (pain_times >= start_time / 1000.0) & (pain_times <= end_time / 1000.0)
         trial_pain_times = pain_times[pain_mask] - (start_time / 1000.0)  # Relative to trial start
         trial_pain_values = pain_values[pain_mask]
+        
+        # Extract temperature data for this trial
+        temp_mask = (smoothtime >= start_time / 1000.0) & (smoothtime <= end_time / 1000.0)
+        trial_temp_times = smoothtime[temp_mask] - (start_time / 1000.0)  # Relative to trial start
+        trial_temp_values = smoothtemp[temp_mask]
+
+        # Adjust trial number for visit
+        adjusted_trial_num = trial_num + (visit * 100)
 
         # Get trial type
         trial_type = stim_sequence[trial_num - 1] if trial_num <= len(stim_sequence) else 'unknown'

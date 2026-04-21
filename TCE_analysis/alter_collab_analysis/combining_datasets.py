@@ -62,6 +62,7 @@ print(f"Combined trial data: {len(all_trial_data)} records")
 # Fix subject ID overlap by adding offset to kneeOA subjects
 print(f"\n--- Fixing subject ID overlap ---")
 KNEEOA_SUBJECT_OFFSET = 1000  # Add 1000 to kneeOA subjects to avoid overlap
+CLBP_SUBJECT_OFFSET = 2000   # Will add 2000 to cLBP subjects to avoid overlap
 
 # Update subject IDs in trial metrics
 kneeoa_mask_metrics = all_trial_metrics['dataset'] == 'kneeOA'
