@@ -248,7 +248,7 @@ plt.show()
 
 #%%
 # ========================================================
-# Plot OH and OA magnitude by clinical group box plot w/ swarm
+# Plot OH and OA magnitude by clinical group box plot
 fig, ax = plt.subplots(figsize=(10, 6))
 oh_oa_data = unified_data[unified_data['trial_type'].isin(['onset', 'offset'])].copy()
 for trial_type in ['onset', 'offset']:
@@ -263,6 +263,7 @@ for trial_type in ['onset', 'offset']:
         oh_data = subset
     else:
         oa_data = subset
+
 
 #%%
 # ==================================================================================================================
@@ -363,25 +364,25 @@ for idx, (trial_type, preceding_metric, direction, metric_label) in enumerate(an
                           label=f'{group}',
                           s=50, edgecolors='black', linewidth=0.5)
                 
-                # # CALCULATE correlation
-                # r, p = stats.pearsonr(group_data[preceding_metric], 
-                #                      group_data['abs_normalized_pain_change'])
+                # CALCULATE correlation
+                r, p = stats.pearsonr(group_data[preceding_metric], 
+                                     group_data['abs_normalized_pain_change'])
                 
-                # # STORE correlation for FDR correction later
-                # all_correlations.append({
-                #     'idx': idx,
-                #     'trial_type': trial_type,
-                #     'metric': preceding_metric,
-                #     'direction': direction,
-                #     'metric_label': metric_label,
-                #     'group': group,
-                #     'r': r,
-                #     'p_raw': p,
-                #     'n': len(group_data),
-                #     'ax': ax,  # Store axis reference
-                #     'group_idx': group_idx,
-                #     'group_data': group_data  # Store data for regression line
-                # })
+                # STORE correlation for FDR correction later
+                all_correlations.append({
+                    'idx': idx,
+                    'trial_type': trial_type,
+                    'metric': preceding_metric,
+                    'direction': direction,
+                    'metric_label': metric_label,
+                    'group': group,
+                    'r': r,
+                    'p_raw': p,
+                    'n': len(group_data),
+                    'ax': ax,  # Store axis reference
+                    'group_idx': group_idx,
+                    'group_data': group_data  # Store data for regression line
+                })
     
     # Formatting
     ax.set_xlabel(f'{preceding_metric.replace("preceding_abs_", "").replace("_", " ").title()}')
@@ -861,29 +862,29 @@ plt.tight_layout()
 plt.savefig(f'{FIGPATH}/trajectory_slopes_by_group.svg', dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
 plt.show()
 
-# # Statistical analysis: ANOVA comparing slopes across groups
-# print("\nStatistical Comparison of Slopes Across Groups:")
-# groups_list = []
-# for group in ['Control', 'Low', 'High']:
-#     group_data = trajectory_df[trajectory_df['group_label'] == group]['slope']
-#     if len(group_data) > 0:
-#         groups_list.append(group_data.values)
-#         print(f"\n{group}:")
-#         print(f"  n = {len(group_data)}")
-#         print(f"  Mean slope = {group_data.mean():.3f}")
-#         print(f"  Std = {group_data.std():.3f}")
-#         print(f"  Range = [{group_data.min():.3f}, {group_data.max():.3f}]")
+# Statistical analysis: ANOVA comparing slopes across groups
+print("\nStatistical Comparison of Slopes Across Groups:")
+groups_list = []
+for group in ['Control', 'Low', 'High']:
+    group_data = trajectory_df[trajectory_df['group_label'] == group]['slope']
+    if len(group_data) > 0:
+        groups_list.append(group_data.values)
+        print(f"\n{group}:")
+        print(f"  n = {len(group_data)}")
+        print(f"  Mean slope = {group_data.mean():.3f}")
+        print(f"  Std = {group_data.std():.3f}")
+        print(f"  Range = [{group_data.min():.3f}, {group_data.max():.3f}]")
 
-# # One-way ANOVA
-# if len(groups_list) >= 2:
-#     f_stat, p_anova = stats.f_oneway(*groups_list)
-#     sig = "***" if p_anova < 0.001 else "**" if p_anova < 0.01 else "*" if p_anova < 0.05 else "ns"
-#     print(f"\nOne-way ANOVA: F = {f_stat:.3f}, p = {p_anova:.4f} {sig}")
+# One-way ANOVA
+if len(groups_list) >= 2:
+    f_stat, p_anova = stats.f_oneway(*groups_list)
+    sig = "***" if p_anova < 0.001 else "**" if p_anova < 0.01 else "*" if p_anova < 0.05 else "ns"
+    print(f"\nOne-way ANOVA: F = {f_stat:.3f}, p = {p_anova:.4f} {sig}")
     
-#     if p_anova < 0.05:
-#         print("Result: Significant difference in trajectory slopes across clinical groups")
-#     else:
-#         print("Result: No significant difference in trajectory slopes across clinical groups")
+    if p_anova < 0.05:
+        print("Result: Significant difference in trajectory slopes across clinical groups")
+    else:
+        print("Result: No significant difference in trajectory slopes across clinical groups")
 
 # %% 
 # Break down trial_sequence effects by trajectory classification - 2x2 OVERLAY PLOTS

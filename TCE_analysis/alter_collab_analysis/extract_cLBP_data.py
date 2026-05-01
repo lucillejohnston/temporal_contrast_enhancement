@@ -45,19 +45,19 @@ info_df = pd.read_csv(info_path)
 # Extract the subjects data
 extracted_data = raw_data['extracted_data']
 subjects_data = extracted_data['subjects'][0, 0]
-#%% Extract group labels from lowbackpainint 
-lbp_scores = pd.to_numeric(info_df['lowbackpainint'], errors='coerce')
-# Create a histogram of lbp_scores
-plt.figure(figsize=(10, 6))
-plt.hist(lbp_scores, bins=10, color='skyblue', edgecolor='black')
-plt.title('Distribution of Low Back Pain Intensity Scores', fontsize=16)
-plt.xlabel('Low Back Pain Intensity', fontsize=14)
-plt.ylabel('Frequency', fontsize=14)
-# add lines for mild/moderate/severe cutoffs
-median_score = lbp_scores.median()
-plt.axvline(x=median_score, color='red', linestyle='--', label=f'Mild/Moderate cutoff (median={median_score:.1f})')
-plt.axvline
-plt.show()
+# #%% Extract group labels from lowbackpainint 
+# lbp_scores = pd.to_numeric(info_df['lowbackpainint'], errors='coerce')
+# # Create a histogram of lbp_scores
+# plt.figure(figsize=(10, 6))
+# plt.hist(lbp_scores, bins=10, color='skyblue', edgecolor='black')
+# plt.title('Distribution of Low Back Pain Intensity Scores', fontsize=16)
+# plt.xlabel('Low Back Pain Intensity', fontsize=14)
+# plt.ylabel('Frequency', fontsize=14)
+# # add lines for mild/moderate/severe cutoffs
+# median_score = lbp_scores.median()
+# plt.axvline(x=median_score, color='red', linestyle='--', label=f'Mild/Moderate cutoff (median={median_score:.1f})')
+# plt.axvline(x=median_score, color='red', linestyle='--', label=f'Mild/Moderate cutoff (median={median_score:.1f})')
+# plt.show()
 
 #%% Process all subjects with visit-aware trial numbering
 # Basically make second visit trials 101-112 instead of 1-12, so we can keep them in the same table without duplicates and easily identify them later
@@ -83,44 +83,36 @@ for subj_idx, subj in enumerate(subjects_data):
     else:
         visit = int(subj['visit'][0, 0])
 
-    # Extract trial boundaries
-    trial_boundaries = subj['trial_boundaries']  # Nx2 array of [start_time, end_time]
-    smoothtemp = subj['smoothtemp'].flatten()
-    smoothtime = subj['smoothtime'].flatten() / 1000.0  # Convert ms to seconds
-    pain_times = subj['pain_times'].flatten() / 1000.0  # Convert ms to seconds
-    pain_values = subj['pain_values'].flatten()
-    stim_sequence = [str(s[0]) for s in subj['stim_sequence'][0]] if subj['stim_sequence'].size > 0 else []
+    # Extract pre-segmented trials
+    trials_data = subj['trials']  # This should be a struct array of trials
     
-    # Adjust pain_times that align with trial boundaries
-    adjustment = 0.001  # Adjust by 1 millisecond (in seconds)
-
-    # Iterate through trials
-    for trial_num, (start_time, end_time) in enumerate(trial_boundaries, start=1):
-        # Identify pain_times that align with trial boundaries
-        boundary_mask = (pain_times == start_time / 1000.0) | (pain_times == end_time / 1000.0)
-        if len(pain_times) != len(pain_values):
-            print(f"Warning: pain_times and pain_values length mismatch for subject {subject_id}, trial {trial_num}. Skipping boundary adjustment.")
-        else:
-            # Adjust boundary-aligned pain_times
-            pain_times[boundary_mask] += adjustment
-
-        # Mask data for this trial
-        pain_mask = (pain_times >= start_time / 1000.0) & (pain_times <= end_time / 1000.0)
-        trial_pain_times = pain_times[pain_mask] - (start_time / 1000.0)  # Relative to trial start
-        trial_pain_values = pain_values[pain_mask]
+    # Iterate through each trial
+    for trial_idx in range(trials_data.shape[1]):  # trials_data is likely (1, N) shape
+        trial = trials_data[0, trial_idx]
         
-        # Extract temperature data for this trial
-        temp_mask = (smoothtime >= start_time / 1000.0) & (smoothtime <= end_time / 1000.0)
-        trial_temp_times = smoothtime[temp_mask] - (start_time / 1000.0)  # Relative to trial start
-        trial_temp_values = smoothtemp[temp_mask]
+        # Extract trial info
+        trial_num = int(trial['trial_number'][0, 0])
+        raw_trial_type = str(trial['trial_type'][0]) if trial['trial_type'].size > 0 else 'unknown'
+        # Map trial type to standardized labels
+        trial_type = trial_type_mapping.get(raw_trial_type, raw_trial_type) 
+        # Extract pre-segmented data for this trial
+        trial_temp_times = trial['temp_times'].flatten() / 1000.0  # Convert ms to seconds
+        trial_temp_values = trial['temp_values'].flatten()
+        trial_pain_times = trial['pain_times'].flatten() / 1000.0  # Convert ms to seconds  
+        trial_pain_values = trial['pain_values'].flatten()
+        # Sort temp and pain data by time to ensure correct alignment
+        temp_sort_idx = np.argsort(trial_temp_times)
+        trial_temp_times = trial_temp_times[temp_sort_idx]
+        trial_temp_values = trial_temp_values[temp_sort_idx]
+
+        pain_sort_idx = np.argsort(trial_pain_times)
+        trial_pain_times = trial_pain_times[pain_sort_idx]
+        trial_pain_values = trial_pain_values[pain_sort_idx]
 
         # Adjust trial number for visit
         adjusted_trial_num = trial_num + (visit * 100)
-
-        # Get trial type
-        trial_type = stim_sequence[trial_num - 1] if trial_num <= len(stim_sequence) else 'unknown'
-
-        # Add metadata
+        
+        # Add metadata for this trial
         metadata_list.append({
             'subject': subject_id,
             'trial_num': adjusted_trial_num,
@@ -129,15 +121,21 @@ for subj_idx, subj in enumerate(subjects_data):
             'study': study
         })
 
-        # Align pain and temp
+        # Process trial data - align pain and temp
+        used_pain_indices = set()  # Track which pain values we've already used to prevent duplicates
+
         for i, temp_time in enumerate(trial_temp_times):
-            # Find closest pain time to this temp time
             pain_value = np.nan
             if len(trial_pain_times) > 0:
                 time_diffs = np.abs(trial_pain_times - temp_time)
                 closest_idx = np.argmin(time_diffs)
-                if time_diffs[closest_idx] <= 0.1:  # If within 100ms, consider it a match
+                
+                # Only assign if close enough AND not already used
+                if (time_diffs[closest_idx] <= 0.1 and 
+                    closest_idx not in used_pain_indices):
                     pain_value = trial_pain_values[closest_idx]
+                    used_pain_indices.add(closest_idx)
+            
             trial_data_list.append({
                 'subject': subject_id,
                 'trial_num': adjusted_trial_num,
@@ -148,6 +146,27 @@ for subj_idx, subj in enumerate(subjects_data):
                 'notes': f'visit_{visit}',
                 'study': study
             })
+# Add this right after you process all subjects, before the "EXTRACTION COMPLETE" message:
+
+print(f"\n=== CHECKING FOR DUPLICATE SUBJECT IDs ===")
+all_subjects = [item['subject'] for item in metadata_list]
+unique_subjects = list(set(all_subjects))
+print(f"Total metadata records: {len(metadata_list)}")
+print(f"Unique subjects: {len(unique_subjects)}")
+print(f"Subject ID range: {min(unique_subjects)} to {max(unique_subjects)}")
+
+# Check for duplicates
+from collections import Counter
+subject_counts = Counter(all_subjects)
+duplicates = {subj: count for subj, count in subject_counts.items() if count > 24}  # More than 2 visits * 12 trials
+if duplicates:
+    print(f"Subjects with suspicious trial counts: {duplicates}")
+    
+# Check the first few subjects
+print(f"First 10 subject IDs: {all_subjects[:10]}")
+
+
+
 
 print(f"\n=== EXTRACTION COMPLETE ===")
 print(f"Metadata records: {len(metadata_list)}")
@@ -245,16 +264,6 @@ print(f"Database path: {sql_path}")
 try:
     conn = sqlite3.connect(sql_path)
     cur = conn.cursor()
-    
-    # Check current database contents
-    cur.execute("SELECT COUNT(*) FROM metadata WHERE study = 'plosONE'")
-    plos_metadata_count = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM metadata WHERE study = 'kneeOA'")
-    knee_metadata_count = cur.fetchone()[0]
-    
-    print(f"Current database contents:")
-    print(f"  plosONE metadata records: {plos_metadata_count}")
-    print(f"  kneeOA metadata records: {knee_metadata_count}")
     
     # Check if cLBP data already exists
     cur.execute("SELECT COUNT(*) FROM metadata WHERE study LIKE 'cLBP%'")
@@ -375,7 +384,7 @@ except Exception as e:
         conn.close()
     raise
 
-print(f"\n🎉 cLBP data successfully added to combined database!")
+print(f"\n cLBP data successfully added to combined database!")
 print(f"   - Studies: cLBP_DPOP, cLBP_MBPR") 
 print(f"   - Visit encoding: trials 1-12 (visit 0), trials 101-112 (visit 1)")
 print(f"   - Pain coverage: ~{pain_coverage:.0f}% (finger scale sampled at ~1Hz)")

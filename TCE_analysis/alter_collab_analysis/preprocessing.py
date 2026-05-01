@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Pick the dataset to preprocess
-dataset = 'cLBP' # options: 'plosONE', 'kneeOA', 'cLBP' (updated 4/1/26)
+dataset = 'cLBP' # options: 'plosONE', 'kneeOA', 'cLBP' (updated 4/28/26)
 with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data.json') as f:
     data = json.load(f)
 trial_data = pd.DataFrame(data)
@@ -49,91 +49,10 @@ elif dataset == 'cLBP':
         'onset': 'onset',
     }
 trial_data['trial_type'] = trial_data['trial_type'].map(trial_key)
-#%% Explore the cLBP dataset a bit because the pain sampling rate is 1Hz
-if dataset in ['plosONE','kneeOA']:
-    pass
-elif dataset == 'cLBP':
-    if not pd.api.types.is_numeric_dtype(trial_data['relative_time']):
-        print("Converting relative_time from timedelta to seconds...")
-        trial_data['relative_time'] = pd.to_timedelta(trial_data['relative_time']).dt.total_seconds()
-    else:
-        print("relative_time already numeric, skipping conversion")
-    # Let's look at a few sample trials to understand the pain/temperature relationship
-sample_trials = []
-for (subject, trial_num), df in trial_data.groupby(['subject', 'trial_num']):
-    # Find trials with some pain data (not all NaN)
-    pain_points = df['pain'].dropna()
-    if len(pain_points) > 5:  # Trials with at least 5 pain ratings
-        sample_trials.append((subject, trial_num, len(df), len(pain_points)))
-    if len(sample_trials) >= 10:  # Get first 10 good trials
-        break
 
-print("Sample trials with good pain data:")
-print("Subject | Trial | Total Points | Pain Points")
-print("-" * 60)
-for subject, trial_num, total, pain_count in sample_trials:
-    print(f"{subject:7} | {trial_num:5} | {total:11} | {pain_count:11}")
-
-# Let's examine one trial in detail
-if sample_trials: # sample trials: [(subj, trial_num, total_points, pain_points), ...]
-    sample_subject, sample_trial = sample_trials[1][0], sample_trials[1][1]
-    sample_df = trial_data[(trial_data['subject'] == sample_subject) & 
-                          (trial_data['trial_num'] == sample_trial)].copy()
-    
-    print(f"\n=== DETAILED LOOK AT TRIAL {sample_subject}_{sample_trial} ===")
-    print(f"Total timepoints: {len(sample_df)}")
-    print(f"Temperature range: {sample_df['temperature'].min():.1f} - {sample_df['temperature'].max():.1f}°C")
-    
-    # Pain data analysis
-    pain_data = sample_df['pain'].dropna()
-    if len(pain_data) > 0:
-        print(f"Pain range: {pain_data.min():.1f} - {pain_data.max():.1f}")
-    
-    # Time differences for temperature vs pain (now numeric)
-    temp_times = sample_df['relative_time'].values
-    pain_times = sample_df[sample_df['pain'].notna()]['relative_time'].values
-    
-    if len(temp_times) > 1:
-        temp_intervals = np.diff(temp_times)
-        temp_rate = 1 / np.median(temp_intervals)
-        print(f"Temperature sampling: ~{temp_rate:.1f} Hz (median interval: {np.median(temp_intervals):.3f}s)")
-    
-    if len(pain_times) > 1:
-        pain_intervals = np.diff(pain_times)
-        pain_rate = 1 / np.median(pain_intervals)
-        print(f"Pain sampling: ~{pain_rate:.1f} Hz (median interval: {np.median(pain_intervals):.3f}s)")
-    
-    # Plot this sample trial
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-    
-    # Temperature plot
-    ax1.plot(sample_df['relative_time'], sample_df['temperature'], 'b-', alpha=0.7, linewidth=1)
-    ax1.set_ylabel('Temperature (°C)', color='b')
-    ax1.tick_params(axis='y', labelcolor='b')
-    ax1.set_title(f'Sample Trial: Subject {sample_subject}, Trial {sample_trial}')
-    ax1.grid(True, alpha=0.3)
-    
-    # Pain plot - only plot non-NaN values
-    pain_mask = sample_df['pain'].notna()
-    if pain_mask.sum() > 0:
-        ax2.plot(sample_df.loc[pain_mask, 'relative_time'], 
-                 sample_df.loc[pain_mask, 'pain'], 'ro-', alpha=0.7, markersize=4)
-        ax2.set_ylabel('Pain Rating', color='r')
-        ax2.tick_params(axis='y', labelcolor='r')
-    else:
-        ax2.text(0.5, 0.5, 'No Pain Data', transform=ax2.transAxes, ha='center')
-    
-    ax2.set_xlabel('Relative Time (s)')
-    ax2.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.show()
-else:
-    print("No trials found with sufficient pain data!")
-
-#%%
+#%% 
 # Functions to process the data
-def resample_trials(trial_df, freq='100ms'):
+def resample_trials(trial_df, freq='100ms', dataset=None):
     """
     Downsample a single trial DataFrame to a specified frequency (default 10Hz).
     Both 'relative_time' and 'actual_time' are downsampled/interpolated.
@@ -143,11 +62,17 @@ def resample_trials(trial_df, freq='100ms'):
     # Set actual_time as index for resampling
     trial_df['actual_time'] = pd.to_datetime(trial_df['actual_time'])
     trial_df = trial_df.set_index('actual_time').sort_index()
-    
-    # Resample numeric columns
-    numeric_cols = ['temperature', 'pain', 'relative_time']
-    df_resampled = trial_df[numeric_cols].resample(freq).mean()
-    
+    if dataset == 'kneeOA' or dataset == 'plosONE':
+        # Resample numeric columns
+        numeric_cols = ['temperature', 'pain', 'relative_time']
+        df_resampled = trial_df[numeric_cols].resample(freq).mean()
+    elif dataset == 'cLBP':
+        # Resample temperature and relative_time with mean 
+        df_temp = trial_df[['temperature','relative_time']].resample(freq).mean()
+        # Resample pain to preserve sparse values 
+        df_pain = trial_df[['pain']].resample(freq).first() # use first to preserve pain ratings
+        df_resampled = pd.concat([df_temp, df_pain], axis=1)
+
     # Reset index so actual_time becomes a column again
     df_resampled = df_resampled.reset_index()
    
@@ -297,15 +222,14 @@ def find_matching_calibration_trials(calibration_trials, t1_hold_trials, temp_to
 
 # Align data in time and make another column aligned in temperature for plotting 
 timeseries_dict = {}
-for (subject, trial_num), df in trial_data.groupby(['subject', 'trial_num']):
-    timeseries_dict[(subject, trial_num)] = df
+for (subject, trial_num, study), df in trial_data.groupby(['subject', 'trial_num', 'study']):
+    timeseries_dict[(subject, trial_num, study)] = df
     # Convert relative_time from string to float if not already
     df['relative_time'] = pd.to_timedelta(df['relative_time']).dt.total_seconds()
-    timeseries_dict[(subject, trial_num)] = df
 
 # Check the sampling rate of the data
 sampling_rates = {}
-for (subject, trial_num), df in timeseries_dict.items():
+for (subject, trial_num, study), df in timeseries_dict.items():
     if len(df) > 1:
         # Calculate time differences between consecutive samples
         time_diffs = df['relative_time'].diff().dropna()
@@ -313,7 +237,7 @@ for (subject, trial_num), df in timeseries_dict.items():
             avg_sampling_interval = time_diffs.mean()
             sampling_rate = 1.0 / avg_sampling_interval if avg_sampling_interval > 0 else None
             if sampling_rate:
-                sampling_rates[(subject, trial_num)] = sampling_rate
+                sampling_rates[(subject, trial_num, study)] = sampling_rate
 
 # Print sampling rate statistics
 if sampling_rates:
@@ -331,7 +255,7 @@ if len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) > 10:
     print("  Downsampling to 10Hz for consistency")
     timeseries_10hz_dict = {}
     for key, df in timeseries_dict.items():
-        df_10hz = resample_trials(df, freq='100ms')
+        df_10hz = resample_trials(df, freq='100ms',dataset=dataset)
         timeseries_10hz_dict[key] = df_10hz
 elif len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) == 10:
     print("  Data already at 10Hz, no downsampling needed")
@@ -422,7 +346,12 @@ if dataset == 'plosONE':
 elif dataset == 'kneeOA':
     # just clean the trials where the pain is always zero
     print(f"Just clean the trials where the pain is always zero")
-        
+
+elif dataset == 'cLBP':
+    # just clean the trials where the pain is always zero
+    print(f"Just clean the trials where the pain is always zero")
+    print(f"I'll have to deal with the different sampling rates but I really don't feel like doing it yet")
+
 # Find trials where pain is always zero
 zero_pain_trials = []
 for key, df in aligned_dict.items():

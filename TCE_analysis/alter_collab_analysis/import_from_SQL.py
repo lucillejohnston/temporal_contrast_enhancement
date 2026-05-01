@@ -1,6 +1,6 @@
 """
 This script imports data from the SQL database back into a workable format for analysis
-Updated 4/1/26 to extract the cLBP data as well
+Updated 4/28/26 to extract the cLBP data as well
 
 Do preprocessing.py next 
 """
@@ -133,47 +133,53 @@ def build_timestamps(df, study_name):
     """Build relative_time and actual_time columns to match preprocessing.py expectations"""
     df = df.copy()
     df['trial_date'] = pd.to_datetime(df['trial_date'], errors='coerce')
-
     if study_name == 'plosONE':
         df['trial_timestamp'] = pd.to_datetime(df['trial_timestamp'], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
         df['relative_time'] = df['trial_timestamp'] - df['trial_date']
     elif study_name == 'kneeOA':
         df['trial_timestamp'] = pd.to_numeric(df['trial_timestamp'], errors='coerce')
         df['relative_time'] = pd.to_timedelta(df['trial_timestamp'], unit='s')
-    elif study_name == 'cLBP':
+    elif study_name in ['cLBP', 'cLBP_DPOP', 'cLBP_MBPR']:  # Fixed: handle all cLBP variants
+        df['trial_timestamp'] = pd.to_numeric(df['trial_timestamp'], errors='coerce')
         df['relative_time'] = pd.to_timedelta(df['trial_timestamp'], unit='s')
+        # Make relative_time relative to each trial start:
+        df['relative_time'] = df.groupby(['subject', 'trial_num', 'study'])['relative_time'].transform(
+            lambda x: x - x.min()
+        )
+        
+        # Handle missing trial_date for cLBP data
+        # If trial_date is NaT, use a default date and rely on relative_time
+        if df['trial_date'].isna().all():
+            # Use a default date (e.g., epoch) and rely on relative_time
+            default_date = pd.Timestamp('1970-01-01')
+            df['trial_date'] = default_date
+        
     df['relative_time_str'] = df['relative_time'].astype(str).str.replace(r'^0 days ', '', regex=True)
-    df['actual_time'] = df['trial_date'] + df['relative_time']
-    df['trial_order'] = df.groupby('subject')['trial_num'].transform(lambda x: pd.factorize(x)[0] + 1)
+    df['actual_time'] = df['trial_date'] + pd.to_timedelta(df['trial_timestamp'], unit='s')
+    df['trial_order'] = df.groupby(['subject', 'study'])['trial_num'].transform(lambda x: pd.factorize(x)[0] + 1)
     df = df.drop(columns=['trial_timestamp']).sort_values(['subject', 'trial_num', 'actual_time']).reset_index(drop=True)
     return df
 
 def check_data_quality(df, study_name):
     """Plot data quality diagnostics and print summary stats"""
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(16, 4))
     fig.suptitle(f'{study_name} — Data Quality Check', fontsize=13)
 
-    # 1) actual_time by row index
-    axes[0].plot(df['actual_time'].values, '.', markersize=1, alpha=0.3)
-    axes[0].set_xlabel('Row index')
-    axes[0].set_ylabel('actual_time')
-    axes[0].set_title('actual_time by row\n(should step up smoothly)')
-
-    # 2) Sampling interval distribution (within trials only)
-    diffs = df.groupby(['subject', 'trial_num'], group_keys=False).apply(
+    # 1) Sampling interval distribution (within trials only)
+    diffs = df.groupby(['subject', 'trial_num', 'study'], group_keys=False).apply(
         lambda g: g['actual_time'].diff().dt.total_seconds().dropna()
     )
-    axes[1].hist(diffs, bins=100, color='steelblue', edgecolor='none')
-    axes[1].set_xlabel('Δt within trial (s)')
-    axes[1].set_ylabel('Count')
-    axes[1].set_title(f'Sampling interval\nmedian={diffs.median():.3f}s')
+    axes[0].hist(diffs, bins=100, color='steelblue', edgecolor='none')
+    axes[0].set_xlabel('Δt within trial (s)')
+    axes[0].set_ylabel('Count')
+    axes[0].set_title(f'Sampling interval\nmedian={diffs.median():.3f}s')
 
-    # 3) Timepoints per trial
-    counts = df.groupby(['subject', 'trial_num']).size()
-    axes[2].hist(counts, bins=40, color='salmon', edgecolor='none')
-    axes[2].set_xlabel('Timepoints per trial')
-    axes[2].set_ylabel('Count')
-    axes[2].set_title(f'Trial length\nmedian={counts.median():.0f} points')
+    # 2) Timepoints per trial
+    counts = df.groupby(['subject', 'trial_num', 'study']).size()
+    axes[1].hist(counts, bins=40, color='salmon', edgecolor='none')
+    axes[1].set_xlabel('Timepoints per trial')
+    axes[1].set_ylabel('Count')
+    axes[1].set_title(f'Trial length\nmedian={counts.median():.0f} points')
 
     plt.tight_layout()
     plt.show()
@@ -181,7 +187,7 @@ def check_data_quality(df, study_name):
     print(f"\n--- {study_name} Quality Summary ---")
     print(f"Total rows:                {len(df):,}")
     print(f"Subjects:                  {df['subject'].nunique()}")
-    print(f"Trials:                    {df.groupby(['subject','trial_num']).ngroups}")
+    print(f"Trials:                    {df.groupby(['subject','trial_num','study']).ngroups}")
     print(f"NaT in actual_time:        {df['actual_time'].isna().sum()}")
     print(f"Zero Δt within trials:     {(diffs == 0).sum()}")
     print(f"Negative Δt within trials: {(diffs < 0).sum()}")

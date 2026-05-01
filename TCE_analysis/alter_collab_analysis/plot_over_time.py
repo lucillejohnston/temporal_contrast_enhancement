@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.ticker as ticker
 # Updated 2026-03-10 now it only works for the kneeOA data not sure what is going on with the plosONE data since I've re-preprocessed it
 # But it takes literally FOREVER to load in the .json 
-dataset = 'kneeOA' # options: 'plosONE', 'kneeOA'
+dataset = 'cLBP' # options: 'plosONE', 'kneeOA', 'cLBP'
 with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data.json') as f:
     data = json.load(f)
 df = pd.DataFrame(data)
@@ -31,12 +31,28 @@ ax1.plot(filtered_df['actual_time'], filtered_df['temperature'], color=color_tem
 ax1.tick_params(axis='y', labelcolor=color_temp)
 ax1.xaxis.set_major_locator(ticker.MaxNLocator(10))
 
-ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
-color_pain = 'tab:red'
-ax2.set_ylabel('Pain', color=color_pain)
-ax2.plot(filtered_df['actual_time'], filtered_df['pain'], color=color_pain, label='Pain')
-ax2.tick_params(axis='y', labelcolor=color_pain)
-ax2.set_ylim(0, 100)
+if dataset == 'kneeOA' or dataset == 'plosONE':
+    ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+    color_pain = 'tab:red'
+    ax2.set_ylabel('Pain', color=color_pain)
+    ax2.plot(filtered_df['actual_time'], filtered_df['pain'], color=color_pain, label='Pain')
+    ax2.tick_params(axis='y', labelcolor=color_pain)
+    ax2.set_ylim(0, 100)
+elif dataset == 'cLBP':
+    ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+    color_pain = 'tab:red'
+    ax2.set_ylabel('Pain', color=color_pain)
+
+    # Plot pain data as both line and markers
+    pain_data = filtered_df.dropna(subset=['pain'])
+    if not pain_data.empty:
+        ax2.plot(pain_data['actual_time'], pain_data['pain'], 
+                color=color_pain, marker='o', markersize=4, 
+                linewidth=1, alpha=0.8, label='Pain')
+        print(f"Plotting {len(pain_data)} pain points")
+
+    ax2.tick_params(axis='y', labelcolor=color_pain)
+    ax2.set_ylim(0, 100)
 
 if 'trial_num' in filtered_df.columns and 'trial_type' in filtered_df.columns:
     trial_groups = filtered_df.groupby('trial_num')
@@ -183,58 +199,3 @@ plt.savefig('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python
 
 plt.show()
 
-
-
-
-# %%
-# %%
-# Plot 1: Large change in pain
-fig, ax = plt.subplots(figsize=(8, 6))
-
-ax.set_ylim(-100, 100)
-ax.set_xlim(0, 10)
-ax.axhline(y=0, color='black', linestyle='--', alpha=0.7, linewidth=1)
-ax.set_ylabel('Δ Pain', fontsize=16)
-ax.set_xlabel('Within-Trial Time', fontsize=12)
-ax.set_title('Large Pain Response', fontsize=18, fontweight='bold')
-
-# Large diverging arrows
-ax.annotate('', xy=(8, 80), xytext=(2, 0), 
-           arrowprops=dict(arrowstyle='->', lw=4, color='red'))
-ax.annotate('', xy=(8, -80), xytext=(2, 0), 
-           arrowprops=dict(arrowstyle='->', lw=4, color='blue'))
-
-# Add labels
-ax.text(8.5, 80, '+80', fontsize=14, ha='left', va='center', color='red', fontweight='bold')
-ax.text(8.5, -80, '-80', fontsize=14, ha='left', va='center', color='blue', fontweight='bold')
-
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.savefig('LargePainResponse.svg', dpi=300, bbox_inches='tight')
-plt.show()
-
-# %%
-# Plot 2: Small change in pain
-fig, ax = plt.subplots(figsize=(8, 6))
-
-ax.set_ylim(-100, 100)
-ax.set_xlim(0, 10)
-ax.axhline(y=0, color='black', linestyle='--', alpha=0.7, linewidth=1)
-ax.set_ylabel('Δ Pain', fontsize=16)
-ax.set_xlabel('Within-Trial Time', fontsize=12)
-ax.set_title('Small Pain Response', fontsize=18, fontweight='bold')
-
-# Small diverging arrows
-ax.annotate('', xy=(8, 20), xytext=(2, 0), 
-           arrowprops=dict(arrowstyle='->', lw=4, color='red'))
-ax.annotate('', xy=(8, -20), xytext=(2, 0), 
-           arrowprops=dict(arrowstyle='->', lw=4, color='blue'))
-
-# Add labels
-ax.text(8.5, 20, '+20', fontsize=14, ha='left', va='center', color='red', fontweight='bold')
-ax.text(8.5, -20, '-20', fontsize=14, ha='left', va='center', color='blue', fontweight='bold')
-
-ax.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.savefig('SmallPainResponse.svg', dpi=300, bbox_inches='tight')
-plt.show()
