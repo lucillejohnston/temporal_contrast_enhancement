@@ -23,11 +23,52 @@ random_subject = np.random.choice(subjects)
 filtered_df = df[df['subject'] == random_subject]
 print("Plotting data for subject:", random_subject)
 
+# Function to find consecutive trial groups
+def find_consecutive_groups(trial_nums):
+    """Find groups of consecutive trial numbers"""
+    if len(trial_nums) == 0:
+        return []
+    
+    trial_nums = sorted(trial_nums)
+    groups = []
+    current_group = [trial_nums[0]]
+    
+    for i in range(1, len(trial_nums)):
+        if trial_nums[i] - trial_nums[i-1] == 1:  # consecutive
+            current_group.append(trial_nums[i])
+        else:  # gap found
+            groups.append(current_group)
+            current_group = [trial_nums[i]]
+    
+    groups.append(current_group)  # add the last group
+    return groups
+
+# Get consecutive trial groups
+unique_trials = filtered_df['trial_num'].unique()
+consecutive_groups = find_consecutive_groups(unique_trials)
+
+print(f"Found {len(consecutive_groups)} consecutive trial groups:")
+for i, group in enumerate(consecutive_groups):
+    print(f"  Group {i+1}: trials {group[0]} to {group[-1]} ({len(group)} trials)")
+
+# Ask user which group to plot (or automatically select the largest group)
+if len(consecutive_groups) > 1:
+    # Automatically select the largest group
+    largest_group = max(consecutive_groups, key=len)
+    selected_trials = largest_group
+    print(f"Multiple sessions detected. Plotting largest consecutive group: trials {selected_trials[0]} to {selected_trials[-1]}")
+else:
+    selected_trials = consecutive_groups[0]
+    print(f"Single session detected. Plotting trials {selected_trials[0]} to {selected_trials[-1]}")
+
+# Filter data to only include selected consecutive trials
+plot_df = filtered_df[filtered_df['trial_num'].isin(selected_trials)]
+
 fig, ax1 = plt.subplots(figsize=(12,6))
 color_temp = 'tab:blue'
 ax1.set_xlabel('Actual Clock Time')
 ax1.set_ylabel('Temperature', color=color_temp)
-ax1.plot(filtered_df['actual_time'], filtered_df['temperature'], color=color_temp, label='Temperature')
+ax1.plot(plot_df['actual_time'], plot_df['temperature'], color=color_temp, label='Temperature')
 ax1.tick_params(axis='y', labelcolor=color_temp)
 ax1.xaxis.set_major_locator(ticker.MaxNLocator(10))
 
@@ -35,7 +76,7 @@ if dataset == 'kneeOA' or dataset == 'plosONE':
     ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
     color_pain = 'tab:red'
     ax2.set_ylabel('Pain', color=color_pain)
-    ax2.plot(filtered_df['actual_time'], filtered_df['pain'], color=color_pain, label='Pain')
+    ax2.plot(plot_df['actual_time'], plot_df['pain'], color=color_pain, label='Pain')
     ax2.tick_params(axis='y', labelcolor=color_pain)
     ax2.set_ylim(0, 100)
 elif dataset == 'cLBP':
@@ -44,7 +85,7 @@ elif dataset == 'cLBP':
     ax2.set_ylabel('Pain', color=color_pain)
 
     # Plot pain data as both line and markers
-    pain_data = filtered_df.dropna(subset=['pain'])
+    pain_data = plot_df.dropna(subset=['pain'])
     if not pain_data.empty:
         ax2.plot(pain_data['actual_time'], pain_data['pain'], 
                 color=color_pain, marker='o', markersize=4, 
@@ -54,8 +95,8 @@ elif dataset == 'cLBP':
     ax2.tick_params(axis='y', labelcolor=color_pain)
     ax2.set_ylim(0, 100)
 
-if 'trial_num' in filtered_df.columns and 'trial_type' in filtered_df.columns:
-    trial_groups = filtered_df.groupby('trial_num')
+if 'trial_num' in plot_df.columns and 'trial_type' in plot_df.columns:
+    trial_groups = plot_df.groupby('trial_num')
     for trial_num, group in trial_groups:
         trial_type = group['trial_type'].iloc[0]
         start_time = group['actual_time'].iloc[0]
@@ -75,9 +116,66 @@ if 'trial_num' in filtered_df.columns and 'trial_type' in filtered_df.columns:
     # Draw last boundary
     ax1.axvline(x=end_time, color='gray', linestyle='--', alpha=0.5)
 
-plt.title(f'Temperature and Pain Over Time for Subject {random_subject}')
+session_info = f" (Session with trials {selected_trials[0]}-{selected_trials[-1]})" if len(consecutive_groups) > 1 else ""
+plt.title(f'Temperature and Pain Over Time for Subject {random_subject}{session_info}')
 fig.tight_layout()  # for proper layout
 plt.show()
+
+# fig, ax1 = plt.subplots(figsize=(12,6))
+# color_temp = 'tab:blue'
+# ax1.set_xlabel('Actual Clock Time')
+# ax1.set_ylabel('Temperature', color=color_temp)
+# ax1.plot(filtered_df['actual_time'], filtered_df['temperature'], color=color_temp, label='Temperature')
+# ax1.tick_params(axis='y', labelcolor=color_temp)
+# ax1.xaxis.set_major_locator(ticker.MaxNLocator(10))
+
+# if dataset == 'kneeOA' or dataset == 'plosONE':
+#     ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+#     color_pain = 'tab:red'
+#     ax2.set_ylabel('Pain', color=color_pain)
+#     ax2.plot(filtered_df['actual_time'], filtered_df['pain'], color=color_pain, label='Pain')
+#     ax2.tick_params(axis='y', labelcolor=color_pain)
+#     ax2.set_ylim(0, 100)
+# elif dataset == 'cLBP':
+#     ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+#     color_pain = 'tab:red'
+#     ax2.set_ylabel('Pain', color=color_pain)
+
+#     # Plot pain data as both line and markers
+#     pain_data = filtered_df.dropna(subset=['pain'])
+#     if not pain_data.empty:
+#         ax2.plot(pain_data['actual_time'], pain_data['pain'], 
+#                 color=color_pain, marker='o', markersize=4, 
+#                 linewidth=1, alpha=0.8, label='Pain')
+#         print(f"Plotting {len(pain_data)} pain points")
+
+#     ax2.tick_params(axis='y', labelcolor=color_pain)
+#     ax2.set_ylim(0, 100)
+
+# if 'trial_num' in filtered_df.columns and 'trial_type' in filtered_df.columns:
+#     trial_groups = filtered_df.groupby('trial_num')
+#     for trial_num, group in trial_groups:
+#         trial_type = group['trial_type'].iloc[0]
+#         start_time = group['actual_time'].iloc[0]
+#         end_time = group['actual_time'].iloc[-1]
+#         mid_time = group['actual_time'].iloc[len(group)//2]
+#         # Draw vertical lines at trial boundaries
+#         ax1.axvline(x=start_time, color='gray', linestyle='--', alpha=0.5)
+#         # Annotate trial_type above the plot
+#         ax1.annotate(
+#             f'{trial_type}',
+#             xy=(mid_time, 1.05),
+#             xycoords=('data', 'axes fraction'),
+#             ha='center',
+#             fontsize=10,
+#             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.7)
+#         )
+#     # Draw last boundary
+#     ax1.axvline(x=end_time, color='gray', linestyle='--', alpha=0.5)
+
+# plt.title(f'Temperature and Pain Over Time for Subject {random_subject}')
+# fig.tight_layout()  # for proper layout
+# plt.show()
 
 # %% Plot a single trial for the same subject
 trials = filtered_df['trial_num'].unique()
@@ -101,12 +199,28 @@ ax1.plot(trial_df['actual_time'], trial_df['temperature'], color=color_temp, lab
 ax1.tick_params(axis='y', labelcolor=color_temp)
 ax1.xaxis.set_major_locator(ticker.MaxNLocator(10))
 
-ax2 = ax1.twinx()  # share the x-axis
-color_pain = 'tab:red'
-ax2.set_ylabel('Pain', color=color_pain)
-ax2.plot(trial_df['actual_time'], trial_df['pain'], color=color_pain, label='Pain')
-ax2.tick_params(axis='y', labelcolor=color_pain)
-ax2.set_ylim(0, 100)
+if dataset == 'kneeOA' or dataset == 'plosONE':
+    ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+    color_pain = 'tab:red'
+    ax2.set_ylabel('Pain', color=color_pain)
+    ax2.plot(trial_df['actual_time'], trial_df['pain'], color=color_pain, label='Pain')
+    ax2.tick_params(axis='y', labelcolor=color_pain)
+    ax2.set_ylim(0, 100)
+elif dataset == 'cLBP':
+    ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+    color_pain = 'tab:red'
+    ax2.set_ylabel('Pain', color=color_pain)
+
+    # Plot pain data as both line and markers
+    pain_data = trial_df.dropna(subset=['pain'])
+    if not pain_data.empty:
+        ax2.plot(pain_data['actual_time'], pain_data['pain'], 
+                color=color_pain, marker='o', markersize=4, 
+                linewidth=1, alpha=0.8, label='Pain')
+        print(f"Plotting {len(pain_data)} pain points")
+
+    ax2.tick_params(axis='y', labelcolor=color_pain)
+    ax2.set_ylim(0, 100)
 
 plt.title(f'Trial {random_trial} - Temperature and Pain Over Time for Subject {random_subject}')
 if trial_type is not None:
@@ -117,8 +231,6 @@ plt.show()
 
 # %%
 # Create a plot of all 4 trial types in a series
-
-# %%
 def find_all_trial_series(df, required_types=['OA', 'OH', 'T1', 'T2']):
     """Find all possible series and return them"""
     all_matches = []
@@ -148,7 +260,7 @@ for i, (subj, trials, types) in enumerate(all_options[:5]):  # Show first 5
 
 # Pick one (change the index to try different ones)
 if all_options:
-    subject, trial_series, trial_types = all_options[8]  # Change 0 to 1, 2, etc.
+    subject, trial_series, trial_types = all_options[1]  # Change 0 to 1, 2, etc.
 
 # Plot the series
 subject_df = df[df['subject'] == subject]
@@ -199,3 +311,5 @@ plt.savefig('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python
 
 plt.show()
 
+
+# %%
