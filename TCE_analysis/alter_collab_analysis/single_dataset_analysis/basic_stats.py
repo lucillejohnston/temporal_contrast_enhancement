@@ -8,7 +8,7 @@ import pandas as pd
 import seaborn as sns
 import sys, os, json
 from scipy import stats
-from plotting_functions import *  
+from TCE_analysis.alter_collab_analysis.utils.plotting_functions import *  
 # Define the dataset
 dataset = 'kneeOA'  # options: 'plosONE', 'kneeOA'
 # When doing plosONE, be sure to change any "onset" to "inv"

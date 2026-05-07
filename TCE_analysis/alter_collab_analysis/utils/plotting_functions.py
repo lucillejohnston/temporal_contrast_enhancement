@@ -483,3 +483,53 @@ def plot_trial_comparison(structured_data, df, stepped_type, control_type, refer
     print(f"  Time-yoked Normalized Pain Change: {control_trial.get('time_yoked_normalized_pain_change', 'N/A'):.1f}%")
     print(f"  Absolute Normalized Pain Change: {control_trial.get('abs_normalized_pain_change', 'N/A'):.1f}%")
 
+
+
+
+def add_sample_sizes(ax, data, x_col, hue_col):
+    """
+    Add sample size annotations to violin plot.
+    
+    Used by: combining_datasets.py line 192
+    """
+    combinations = data.groupby([x_col, hue_col]).size().reset_index(name='n')
+    
+    x_positions = {trial: i for i, trial in enumerate(data[x_col].unique())}
+    hue_positions = {group: i for i, group in enumerate(data[hue_col].unique())}
+    
+    n_groups = len(data[hue_col].unique())
+    width = 0.8 / n_groups
+    
+    for _, row in combinations.iterrows():
+        x_pos = x_positions[row[x_col]]
+        hue_idx = hue_positions[row[hue_col]]
+        adjusted_x = x_pos + (hue_idx - (n_groups-1)/2) * width * 0.8
+        
+        ax.text(adjusted_x, ax.get_ylim()[0] + 0.02 * (ax.get_ylim()[1] - ax.get_ylim()[0]), 
+                f'n={row["n"]}', 
+                ha='center', va='bottom', fontsize=9, fontweight='bold')
+
+
+def add_significance_brackets(ax, x1, x2, y, h, text, fontsize=12):
+    """
+    Add significance brackets between bars.
+    
+    Used by: combining_datasets.py line 774
+    """
+    ax.plot([x1, x1, x2, x2], [y, y+h, y+h, y], lw=1.5, c='black')
+    ax.text((x1+x2)*0.5, y+h, text, ha='center', va='bottom', 
+            fontweight='bold', fontsize=fontsize)
+
+
+# Constants
+GROUP_COLORS = {
+    'Control': '#2E8B57',    # Green
+    'Low': '#FF8C00',        # Orange  
+    'High': '#DC143C'        # Red
+}
+
+TRAJECTORY_COLORS = {
+    'habituator': 'blue',
+    'sensitizer': 'red',
+    'no_trend': 'gray'
+}

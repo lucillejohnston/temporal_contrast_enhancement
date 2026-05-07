@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
 import matplotlib.ticker as ticker
-import plotting_functions as pf
+import TCE_analysis.alter_collab_analysis.utils.plotting_functions as pf
 dataset = 'kneeOA' # options: 'plosONE', 'kneeOA'
 with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json') as f:
     data = json.load(f)

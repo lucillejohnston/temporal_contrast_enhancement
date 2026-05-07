@@ -13,7 +13,7 @@ with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/
 df = pd.DataFrame(data)
 df['actual_time'] = pd.to_datetime(df['actual_time'])
 sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/')
-import plotting_functions as pf
+import TCE_analysis.alter_collab_analysis.utils.plotting_functions as pf
 # %%
 # Now plot temperature and pain over actual_time for a random subject
 

@@ -10,7 +10,7 @@ import pandas as pd
 import seaborn as sns
 import sys, os, json
 from scipy import stats
-from plotting_functions import *  
+from TCE_analysis.alter_collab_analysis.utils.plotting_functions import *  
 
 # File paths
 TRIAL_METRICS_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trial_metrics.json'

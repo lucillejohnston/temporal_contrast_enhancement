@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import json
 from typing import Dict, Any
-from plotting_functions import *
+from TCE_analysis.alter_collab_analysis.utils.plotting_functions import *
 
 # =========================================================
 # CONFIGURATION

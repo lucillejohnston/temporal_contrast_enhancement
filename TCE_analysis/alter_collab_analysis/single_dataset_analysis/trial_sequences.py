@@ -10,7 +10,7 @@ import sys, os, json
 import scipy.stats as stats
 from statsmodels.stats.multitest import multipletests
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from plotting_functions import *  
+from TCE_analysis.alter_collab_analysis.utils.plotting_functions import *  
 
 dataset = 'kneeOA' # options: 'kneeOA', 'plosONE'
 inv_label = 'onset' if dataset == 'kneeOA' else 'inv' # Label for onset hyperalgesia trials based on dataset
