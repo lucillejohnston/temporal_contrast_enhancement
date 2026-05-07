@@ -5,7 +5,7 @@ UCSF Neuroscience
 ## TCE_analysis
 Contains all of the scripts used to analyze the TCE task (both via collaboration with Ben Alter and collected during stage 0 of sEEG trial)
 ### For alter_collab_analysis:
-1. Either extract_kneeOA_data.py or extract_PLOSONE_data.py (or other script) 
+1. Either extract_kneeOA_data.py, extract_PLOSONE_data.py, extract_cLBP_data.py
 - pull the data from the given format
 - put into the SQL database (combined_data.sqlite)
 2. import_from_SQL.py
@@ -35,7 +35,8 @@ Contains all of the scripts used to analyze the TCE task (both via collaboration
 - building on trial_sequences.py, are there common trajectories of people across trials? 
 10. baseline_metrics.py
 - building on trial_sequences.py and habituators_sensizters.py, are there differences at baseline (or at the first trial) that predict the trajectory of people over time 
-
+11. combining_datasets.py
+- Performs basically the same analyses but on a combined dataset
 
 ### Task Scripts
 Contains all of the Python scripts used to run the TCE task using the QST.Labs TCSII device
