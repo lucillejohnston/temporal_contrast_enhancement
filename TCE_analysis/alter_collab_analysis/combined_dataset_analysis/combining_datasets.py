@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 print("=== LOADING AND COMBINING DATASETS ===")
 
-datasets = ['kneeOA', 'plosONE']
+datasets = ['kneeOA', 'plosONE'] #'cLBP' # 'sEEG' 
 combined_trial_metrics = []
 combined_trial_data = []
 FIGPATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures'
@@ -666,6 +666,10 @@ print(trajectory_df['trajectory_classification'].value_counts())
 print(f"\nBy Clinical Group:")
 trajectory_summary = trajectory_df.groupby(['group_label', 'trajectory_classification']).size().unstack(fill_value=0)
 print(trajectory_summary)
+trajectory_df.to_csv(
+    f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trajectory_classifications.csv',
+    index=False
+)
 
 #%%
 # ========================================================

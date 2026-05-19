@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Pick the dataset to preprocess
-dataset = 'cLBP' # options: 'plosONE', 'kneeOA', 'cLBP' (updated 4/28/26)
+dataset = 'kneeOA' # options: 'plosONE', 'kneeOA', 'cLBP' (updated 4/28/26)
 with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data.json') as f:
     data = json.load(f)
 trial_data = pd.DataFrame(data)
@@ -69,7 +69,7 @@ def resample_trials(trial_df, freq='100ms', dataset=None):
     elif dataset == 'cLBP':
         # Resample temperature and relative_time with mean 
         df_temp = trial_df[['temperature','relative_time']].resample(freq).mean()
-        # Resample pain to preserve sparse values 
+        # Resample pain to preserve sparse  values 
         df_pain = trial_df[['pain']].resample(freq).first() # use first to preserve pain ratings
         df_resampled = pd.concat([df_temp, df_pain], axis=1)
 
@@ -79,7 +79,7 @@ def resample_trials(trial_df, freq='100ms', dataset=None):
     # Add back non-numeric columns
     for col in ['subject','trial_num','trial_type','study','group_label','site','spot','notes']:
         if col in trial_df.columns:
-            df_resampled[col] = trial_df[col].dropna().iloc[0] # use the first value in each resampled bin
+            df_resampled[col] = trial_df[col].iloc[0] # use the first value in each resampled bin
     
     return df_resampled
 
@@ -606,12 +606,12 @@ for (subject, trial_num), trial_df in cleaned_aligned_df.groupby(['subject', 'tr
         break
 
 # %%
-# Preprocess data: cut trials at -5s to 60s and resample at 5Hz
+# Preprocess data: cut trials at -5s to 60s and resample at 1Hz
 # This makes each trial shorter for faster paramater optimization and model fitting
 from scipy.interpolate import interp1d
 CUTOFF_TIME = 60.0  # seconds
 BASELINE_START = -5.0 # seconds
-TARGET_SAMPLE_RATE = 5.0 # Hz - downsampling for optimization speed
+TARGET_SAMPLE_RATE = 1.0 # Hz - downsampling for optimization speed
 preprocessed_data = []
 
 for subject in cleaned_aligned_df['subject'].unique():

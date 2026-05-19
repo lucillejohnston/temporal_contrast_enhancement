@@ -4,21 +4,22 @@ Section 1: Imports and Data Loading
 
 Loads trial data from JSON into a pandas DataFrame.
 """
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import json
 from typing import Dict, Any
-from TCE_analysis.alter_collab_analysis.utils.plotting_functions import *
+import sys
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/')
+from utils.plotting_functions import *
 
 # =========================================================
 # CONFIGURATION
 # =========================================================
 
 # Path to the cleaned, aligned trial data
-dataset = 'plosONE' # options: 'plosONE', 'kneeOA'
+dataset = 'cLBP' # options: 'plosONE', 'kneeOA', 'cLBP'
 
 DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
 OUTPUT_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
@@ -51,7 +52,13 @@ elif dataset == 'kneeOA':
         't2_hold':  {'kind': 'control', 'extrema_order': ['control'],    'reference': ['onset']},
         'innocuous': {'kind': 'control', 'extrema_order': ['control'],   'reference': None}
     }
-
+elif dataset == 'cLBP':
+    trial_type_info = {
+        'onset':   {'kind': 'stepped', 'extrema_order': ['min', 'max'], 'reference': None},
+        'offset':  {'kind': 'stepped', 'extrema_order': ['max', 'min'], 'reference': None},
+        't1_hold': {'kind': 'control', 'extrema_order': ['control'],    'reference': ['offset']},
+        't2_hold': {'kind': 'control', 'extrema_order': ['control'],    'reference': ['onset']}
+    }
 
 # Load data
 if not os.path.exists(DATA_PATH):
@@ -580,15 +587,15 @@ print(f"Trial metrics saved to {OUTPUT_PATH}")
 # TRIAL COMPARISON PLOTTING
 # ========================================================
 
-# # Random selection (original behavior)
-# plot_trial_comparison(structured_data, df, 'onset', 't2_hold', 'onset')
+# Random selection (original behavior)
+plot_trial_comparison(structured_data, df, 'onset', 't2_hold', 'onset')
 
 # # # Specific subject and specific control trial
 # subjects = [117, 121, 131, 144, 154, 158, 158, 161, 177]
 # trials = [1, 8, 7, 9, 3, 3, 9, 7, 7]
 # for subj, trial in zip(subjects, trials):
 #     plot_trial_comparison(structured_data, df, 'inv', 't2_hold', 'inv', specific_subject=subj, specific_control_trial=trial)
-plot_trial_comparison(structured_data, df, 'onset','t2_hold','onset', specific_subject=7, specific_control_trial=7)
+# plot_trial_comparison(structured_data, df, 'onset','t2_hold','onset', specific_subject=7, specific_control_trial=7)
 
 # %%
 # Debugging weird trials
