@@ -8,9 +8,10 @@ import pandas as pd
 import seaborn as sns
 import sys, os, json
 from scipy import stats
-from TCE_analysis.alter_collab_analysis.utils.plotting_functions import *  
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/')
+from utils.plotting_functions import plot_trial_comparison, create_correlation_scatter
 # Define the dataset
-dataset = 'kneeOA'  # options: 'plosONE', 'kneeOA'
+dataset = 'cLBP'  # options: 'plosONE', 'kneeOA', 'cLBP'
 # When doing plosONE, be sure to change any "onset" to "inv"
 # When doing kneeOA, be sure to change any "inv" to "onset"
 # Define dataset-specific trial types and comparisons
@@ -31,6 +32,15 @@ elif dataset == 'kneeOA':
         ('t1_hold', 'offset', 'max_val', 'T1_Hold vs Offset: Max Value', None),
         ('t2_hold', 'onset', 'max_val', 'T2_Hold vs Onset: Max Value', None),
     ]
+elif dataset == 'cLBP':
+    trial_types = ['onset', 'offset', 't1_hold', 't2_hold']
+    control_trials = ['t1_hold', 't2_hold']
+    stepped_trials = ['onset', 'offset']
+    trial_comparisons = [
+        ('t1_hold', 'offset', 'max_val', 'T1_Hold vs Offset: Max Value', None),
+        ('t2_hold', 'onset', 'max_val', 'T2_Hold vs Onset: Max Value', None),
+    ]
+    
 # File paths
 TRIAL_METRICS_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
 TRIAL_DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
@@ -116,11 +126,11 @@ control_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(control_tr
 temp_max_df = pd.DataFrame({
     'time_yoked_max_combined': pd.concat([
         control_trials['time_yoked_max_val_offset'], 
-        control_trials['time_yoked_max_val_onset'] if dataset == 'kneeOA' else control_trials['time_yoked_max_val_inv']
+        control_trials['time_yoked_max_val_onset'] if dataset in ['kneeOA', 'cLBP'] else control_trials['time_yoked_max_val_inv']
     ]).dropna(),
     'abs_max_combined': pd.concat([
         control_trials.loc[control_trials['time_yoked_max_val_offset'].notna(), 'abs_max_val'],
-        control_trials.loc[control_trials['time_yoked_max_val_onset'].notna() if dataset == 'kneeOA' else control_trials['time_yoked_max_val_inv'].notna(), 'abs_max_val']
+        control_trials.loc[control_trials['time_yoked_max_val_onset'].notna() if dataset in ['kneeOA', 'cLBP'] else control_trials['time_yoked_max_val_inv'].notna(), 'abs_max_val']
     ])
 }).reset_index(drop=True)
 
@@ -137,11 +147,11 @@ create_correlation_scatter(
 temp_min_df = pd.DataFrame({
     'time_yoked_min_combined': pd.concat([
         control_trials['time_yoked_min_val_offset'], 
-        control_trials['time_yoked_min_val_onset'] if dataset == 'kneeOA' else control_trials['time_yoked_min_val_inv']
+        control_trials['time_yoked_min_val_onset'] if dataset in ['kneeOA', 'cLBP'] else control_trials['time_yoked_min_val_inv']
     ]).dropna(),
     'abs_min_combined': pd.concat([
         control_trials.loc[control_trials['time_yoked_min_val_offset'].notna(), 'abs_min_val'],
-        control_trials.loc[control_trials['time_yoked_min_val_onset'].notna() if dataset == 'kneeOA' else control_trials['time_yoked_min_val_inv'].notna(), 'abs_min_val']
+        control_trials.loc[control_trials['time_yoked_min_val_onset'].notna() if dataset in ['kneeOA', 'cLBP'] else control_trials['time_yoked_min_val_inv'].notna(), 'abs_min_val']
     ])
 }).reset_index(drop=True)
 
@@ -201,7 +211,7 @@ plt.show()
 offset_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'offset'].copy()
 if dataset == 'plosONE':
     inv_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'inv'].copy()
-elif dataset == 'kneeOA':
+elif dataset in ['kneeOA', 'cLBP']:
     inv_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'onset'].copy()
 
 # Find common subjects
@@ -237,6 +247,28 @@ plt.title(f'Offset vs Onset: Normalized Pain Change\n(p={pval:.4f})')
 plt.tight_layout()
 plt.show()
 
+# #%% 
+# # ============================================================================
+# # Sometimes, there are huge outliers in the time_yoked metrics, so let's look at them
+# # ===========================================================================
+# for tt in ["t1_hold", "t2_hold"]:
+#     sub = trial_metrics_df[trial_metrics_df["trial_type"] == tt].copy()
+#     sub["abs_ty"] = sub["time_yoked_normalized_pain_change"].abs()
+#     print("\n", tt)
+#     print(sub.sort_values("abs_ty", ascending=False)[
+#         ["subject", "trial_num", "trial_type", "time_yoked_normalized_pain_change", "abs_normalized_pain_change"]
+#     ].head(10))
+
+# # Either loop and plot all trials that have time_yoked_normalized_pain_change > 100
+# # Or select a specific subject, trial combo to plot 
+# if dataset != 'cLBP': #everyone else is good
+#     plot_trial_comparison()
+# else: # treat cLBP data different because of the sparse pain ratings
+
+
+
+
+
 
 #%%
 # ============================================================================
@@ -249,7 +281,7 @@ for trial1, trial2, metric, label, ylims in comparisons:
     df2 = trial_metrics_df[trial_metrics_df['trial_type'] == trial2].copy()
     if dataset == 'plosONE':
         metric1 = f'time_yoked_{metric}_{trial2}'  # e.g., 'time_yoked_max_val_offset' or 'time_yoked_min_val_stepdown'
-    elif dataset == 'kneeOA':
+    elif dataset in ['kneeOA', 'cLBP']:
         metric1 = f'control_{metric}_{trial2}' # e.g., 'control_max_val_offset' or 'control_min_val_onset'
     metric2 = f'abs_{metric}'  # e.g., 'abs_max_val' or 'abs_min_val'
     common_subjects = set(df1['subject']) & set(df2['subject'])

@@ -29,7 +29,7 @@ window_size = 5
 period_c_duration = 20
 trial_definitions = {
     'inv': ['T2', 'T1', 'T2'], # in plosONE dataset they are called 'inv'
-    'onset': ['T2', 'T1', 'T2'], # in kneeOA dataset they are called 'offset'
+    'onset': ['T2', 'T1', 'T2'], # in kneeOA and cLBP datasets they are called 'onset'
     't2_hold': ['T2', 'T2', 'T2'],
     'offset': ['T1', 'T2', 'T1'], 
     't1_hold': ['T1', 'T1', 'T1'],
@@ -78,6 +78,7 @@ df = pd.read_json(DATA_PATH, orient='records')
 # for kneeOA data, filter for site == forearm
 if dataset == 'kneeOA': 
     df = df[df['site'] == 'forearm'].copy()
+
 
 #%%
 # =========================================================
@@ -388,8 +389,8 @@ def calc_normalized_pain_change(row, use_time_yoked=True):
     elif tt == 't2_hold':
         # t2_hold references 'inv' ---- practically, I don't really care about stepdown trials yet 
         if use_time_yoked:
-            min_val = row.get('time_yoked_min_val_onset' if dataset == 'kneeOA' else 'time_yoked_min_val_inv')
-            max_val = row.get('time_yoked_max_val_onset' if dataset == 'kneeOA' else 'time_yoked_max_val_inv')
+            min_val = row.get('time_yoked_min_val_onset' if dataset in ['kneeOA','cLBP'] else 'time_yoked_min_val_inv')
+            max_val = row.get('time_yoked_max_val_onset' if dataset in ['kneeOA','cLBP'] else 'time_yoked_max_val_inv')
         else:
             min_val = row.get('abs_min_val')
             max_val = row.get('abs_max_val')
@@ -407,12 +408,22 @@ trial_metrics_list = []
 subject_extrema_times = {}
 
 # Extract stepped trials first to store their extrema times
-for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
+for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num', 'study']):
     trial_type = trial_df['trial_type'].iloc[0]
     if trial_type not in trial_definitions:
         continue # skip other trial types
     trial_df = trial_df.sort_values('aligned_time')
-    pain_series = pd.Series(trial_df['pain'].values, index=trial_df['aligned_time'].values)
+    pain_df = (
+        trial_df[['aligned_time', 'pain']]
+        .dropna(subset=['pain'])
+        .drop_duplicates(subset=['aligned_time'])
+        .sort_values('aligned_time')
+        )
+
+    pain_series = pd.Series(
+        pain_df['pain'].to_numpy(),
+        index=pain_df['aligned_time'].to_numpy()
+    )
     info = trial_type_info[trial_type]
     if info['kind'] == 'control':
         continue # skip control trials for now
@@ -445,12 +456,22 @@ for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
     trial_metrics_list.append(record)
 
 # Now extract control trials using reference times from stepped trials
-for (subject, trial_num), trial_df in df.groupby(['subject', 'trial_num']):
+for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num', 'study']):
     trial_type = trial_df['trial_type'].iloc[0]
     if trial_type not in trial_definitions:
         continue # skip other trial types
     trial_df = trial_df.sort_values('aligned_time')
-    pain_series = pd.Series(trial_df['pain'].values, index=trial_df['aligned_time'].values)
+    pain_df = (
+        trial_df[['aligned_time', 'pain']]
+        .dropna(subset=['pain'])
+        .drop_duplicates(subset=['aligned_time'])
+        .sort_values('aligned_time')
+        )
+
+    pain_series = pd.Series(
+        pain_df['pain'].to_numpy(),
+        index=pain_df['aligned_time'].to_numpy()
+    )
     info = trial_type_info[trial_type]
     if info['kind'] != 'control':
         continue # skip stepped trials, already processed
@@ -586,6 +607,9 @@ print(f"Trial metrics saved to {OUTPUT_PATH}")
 # ========================================================
 # TRIAL COMPARISON PLOTTING
 # ========================================================
+# the cLBP pain data is so sparse, it breaks the code
+# for the sake of visualization, let's interpolate 
+
 
 # Random selection (original behavior)
 plot_trial_comparison(structured_data, df, 'onset', 't2_hold', 'onset')
@@ -625,8 +649,8 @@ for subject_id, trial_num, change_type, change_val, trial_data in extreme_trials
     print()
 
 # Print all of the things for weird trials
-subject = 7 
-trial_num = 6  # or whichever trial is showing the weird result
+subject = 8 
+trial_num = 12  # or whichever trial is showing the weird result
 
 print("=== DEBUGGING NORMALIZED PAIN CHANGE ===")
 

@@ -8,8 +8,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
 import matplotlib.ticker as ticker
-import TCE_analysis.alter_collab_analysis.utils.plotting_functions as pf
-dataset = 'kneeOA' # options: 'plosONE', 'kneeOA'
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/')
+import utils.plotting_functions as pf
+dataset = 'plosONE' # options: 'plosONE', 'kneeOA'
 with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json') as f:
     data = json.load(f)
 df = pd.DataFrame(data)
@@ -144,6 +145,12 @@ elif dataset == 'kneeOA':
         ['innocuous','t1_hold'],
         ['innocuous','t2_hold']
     ]
+elif dataset == 'cLBP':
+    trial_pairs = [
+        ['onset', 't2_hold'],
+        ['offset', 't1_hold'],
+        ['offset','onset'],
+    ]
 
 for pair in trial_pairs:
     fig, axes = plt.subplots(
@@ -206,7 +213,7 @@ for pair in trial_pairs:
     axes[1].set_xlabel("Aligned Time (s)")
     axes[1].set_ylabel("Pain")
     axes[1].set_xlim(10, 40)
-    axes[1].set_ylim((0, 70) if 'innocuous' in pair else (10, 70))
+    axes[1].set_ylim((0, 70) if 'innocuous' in pair else (10, 100))
     axes[1].set_title(f"Average Pain Curves: {pair[0]} vs {pair[1]} ({dataset})")
     axes[1].legend()
     axes[1].grid(True)

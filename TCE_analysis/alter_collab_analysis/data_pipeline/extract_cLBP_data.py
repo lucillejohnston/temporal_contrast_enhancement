@@ -45,20 +45,45 @@ info_df = pd.read_csv(info_path)
 # Extract the subjects data
 extracted_data = raw_data['extracted_data']
 subjects_data = extracted_data['subjects'][0, 0]
-# #%% Extract group labels from lowbackpainint 
+#%% Extract group labels from lowbackpainint 
 # lbp_scores = pd.to_numeric(info_df['lowbackpainint'], errors='coerce')
 # # Create a histogram of lbp_scores
 # plt.figure(figsize=(10, 6))
-# plt.hist(lbp_scores, bins=10, color='skyblue', edgecolor='black')
+# plt.hist(lbp_scores, bins=15, color='skyblue', edgecolor='black')
 # plt.title('Distribution of Low Back Pain Intensity Scores', fontsize=16)
 # plt.xlabel('Low Back Pain Intensity', fontsize=14)
 # plt.ylabel('Frequency', fontsize=14)
-# # add lines for mild/moderate/severe cutoffs
-# median_score = lbp_scores.median()
-# plt.axvline(x=median_score, color='red', linestyle='--', label=f'Mild/Moderate cutoff (median={median_score:.1f})')
-# plt.axvline(x=median_score, color='red', linestyle='--', label=f'Mild/Moderate cutoff (median={median_score:.1f})')
+# plt.vlines(x=3, ymin=0, ymax=15 ,color='red', linestyle='dashed', label='Cutoff (3)')
 # plt.show()
 
+# According to Ben, the cutoff is <= 3 is Low and >3 is High
+info_df['lowbackpainint'] = pd.to_numeric(info_df['lowbackpainint'], errors='coerce')
+info_df['group_label'] = np.where(info_df['lowbackpainint'] <= 3, 'Low', 'High')
+
+info_df['DPOP_ID_num'] = pd.to_numeric(info_df['DPOP_ID'], errors='coerce')
+info_df['MBPR_ID_num'] = pd.to_numeric(info_df['MBPR ID'], errors='coerce')
+
+print(info_df['group_label'].value_counts(dropna=False))
+
+def lookup_clbp_group(subject_id, study, info_df):
+    if study == 'cLBP_DPOP':
+        match = info_df.loc[
+            info_df['DPOP_ID_num'].eq(subject_id),
+            ['lowbackpainint', 'group_label']
+        ]
+    elif study == 'cLBP_MBPR':
+        match = info_df.loc[
+            info_df['MBPR_ID_num'].eq(subject_id),
+            ['lowbackpainint', 'group_label']
+        ]
+    else:
+        return np.nan, np.nan
+
+    if match.empty:
+        return np.nan, np.nan
+
+    row = match.iloc[0]
+    return row['lowbackpainint'], row['group_label']
 #%% Process all subjects with visit-aware trial numbering
 # Basically make second visit trials 101-112 instead of 1-12, so we can keep them in the same table without duplicates and easily identify them later
 print(f"\nProcessing all {len(subjects_data)} sessions...")
@@ -112,12 +137,15 @@ for subj_idx, subj in enumerate(subjects_data):
         # Adjust trial number for visit
         adjusted_trial_num = trial_num + (visit * 100)
         
+        # Extract group 
+        lbp_intensity, group_label = lookup_clbp_group(subject_id, study, info_df)
+
         # Add metadata for this trial
         metadata_list.append({
             'subject': subject_id,
             'trial_num': adjusted_trial_num,
             'trial_date': subj['session_start_time'][0] if 'session_start_time' in subj.dtype.names else 'unknown',
-            'group': 'cLBP',
+            'group': group_label,
             'study': study
         })
 
@@ -162,17 +190,6 @@ duplicates = {subj: count for subj, count in subject_counts.items() if count > 2
 if duplicates:
     print(f"Subjects with suspicious trial counts: {duplicates}")
     
-# Check the first few subjects
-print(f"First 10 subject IDs: {all_subjects[:10]}")
-
-
-
-
-print(f"\n=== EXTRACTION COMPLETE ===")
-print(f"Metadata records: {len(metadata_list)}")
-print(f"Trial data records: {len(trial_data_list)}")
-
-
 # %% Check that worked as expected before saving to SQL
 # Create DataFrames first
 metadata_df = pd.DataFrame(metadata_list)

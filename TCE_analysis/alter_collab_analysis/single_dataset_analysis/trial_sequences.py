@@ -10,10 +10,10 @@ import sys, os, json
 import scipy.stats as stats
 from statsmodels.stats.multitest import multipletests
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from TCE_analysis.alter_collab_analysis.utils.plotting_functions import *  
+from utils.plotting_functions import *  
 
-dataset = 'kneeOA' # options: 'kneeOA', 'plosONE'
-inv_label = 'onset' if dataset == 'kneeOA' else 'inv' # Label for onset hyperalgesia trials based on dataset
+dataset = 'cLBP' # options: 'kneeOA', 'plosONE', 'cLBP'
+inv_label = 'onset' if dataset in ['kneeOA', 'cLBP'] else 'inv' # Label for onset hyperalgesia trials based on dataset
 # File paths
 TRIAL_METRICS_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
 TRIAL_DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'

@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 print("=== LOADING AND COMBINING DATASETS ===")
 
-datasets = ['kneeOA', 'plosONE', 'cLBP'] #'cLBP' # 'sEEG' 
+datasets = ['kneeOA', 'plosONE'] 
 combined_trial_metrics = []
 combined_trial_data = []
 FIGPATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures'
@@ -62,23 +62,17 @@ print(f"Combined trial data: {len(all_trial_data)} records")
 # Fix subject ID overlap by adding offset to kneeOA subjects
 print(f"\n--- Fixing subject ID overlap ---")
 KNEEOA_SUBJECT_OFFSET = 1000  # Add 1000 to kneeOA subjects to avoid overlap
-CLBP_SUBJECT_OFFSET = 2000   # Add 2000 to cLBP subjects to avoid overlap
+CLBP_SUBJECT_OFFSET = 2000   # Will add 2000 to cLBP subjects to avoid overlap
 
 # Update subject IDs in trial metrics
 kneeoa_mask_metrics = all_trial_metrics['dataset'] == 'kneeOA'
 all_trial_metrics.loc[kneeoa_mask_metrics, 'subject'] += KNEEOA_SUBJECT_OFFSET
-clbp_mask_metrics = all_trial_metrics['dataset'] == 'cLBP'
-all_trial_metrics.loc[clbp_mask_metrics, 'subject'] += CLBP_SUBJECT_OFFSET
 # Update subject IDs in trial data  
 kneeoa_mask_data = all_trial_data['dataset'] == 'kneeOA'
 all_trial_data.loc[kneeoa_mask_data, 'subject'] += KNEEOA_SUBJECT_OFFSET
-clbp_mask_data = all_trial_data['dataset'] == 'cLBP'
-all_trial_data.loc[clbp_mask_data, 'subject'] += CLBP_SUBJECT_OFFSET
-
 print(f"Updated subject IDs:")
 print(f"  plosONE subjects: {all_trial_metrics[all_trial_metrics['dataset'] == 'plosONE']['subject'].min()}-{all_trial_metrics[all_trial_metrics['dataset'] == 'plosONE']['subject'].max()}")
 print(f"  kneeOA subjects: {all_trial_metrics[all_trial_metrics['dataset'] == 'kneeOA']['subject'].min()}-{all_trial_metrics[all_trial_metrics['dataset'] == 'kneeOA']['subject'].max()}")
-print(f"  cLBP subjects: {all_trial_metrics[all_trial_metrics['dataset'] == 'cLBP']['subject'].min()}-{all_trial_metrics[all_trial_metrics['dataset'] == 'cLBP']['subject'].max()}")
 # Get kneeOA group labels from SQL database
 import sqlite3
 sql_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/combined_data.sqlite'
@@ -94,24 +88,9 @@ ORDER BY subject
 kneeoa_groups = pd.read_sql_query(kneeoa_groups_query, conn)
 conn.close()
 
-# Get cLBP group labels from SQL database
-conn = sqlite3.connect(sql_path)
-clbp_groups_query = '''
-SELECT DISTINCT
-    subject,
-    COALESCE(NULLIF("group", ''), 'High') AS group_label
-FROM metadata
-WHERE study LIKE 'cLBP%'
-ORDER BY subject
-'''
-clbp_groups = pd.read_sql_query(clbp_groups_query, conn)
-conn.close()
-
 # Apply the same subject ID offset to the group labels
 kneeoa_groups['subject'] += KNEEOA_SUBJECT_OFFSET
 kneeoa_groups['dataset'] = 'kneeOA'
-clbp_groups['subject'] += CLBP_SUBJECT_OFFSET
-clbp_groups['dataset'] = 'cLBP'
 # Create plosONE group labels (all controls)
 plosone_subjects = all_trial_metrics[all_trial_metrics['dataset'] == 'plosONE']['subject'].unique()
 plosone_groups = pd.DataFrame({
@@ -120,7 +99,7 @@ plosone_groups = pd.DataFrame({
     'dataset': 'plosONE'
 })
 # Combine group labels
-all_groups = pd.concat([kneeoa_groups, clbp_groups, plosone_groups], ignore_index=True)
+all_groups = pd.concat([kneeoa_groups, plosone_groups], ignore_index=True)
 # Merge group labels with trial metrics
 all_trial_metrics = all_trial_metrics.merge(
     all_groups[['subject', 'group_label']], 
@@ -201,115 +180,22 @@ GROUP_COLORS = {
     'Low': '#FF8C00',        # Orange  
     'High': '#DC143C'        # Red
 }
-
-############################################################################## Raw distributions and group comparisons
-# Plot the raw data to get a sense of the distributions and group differences
-# Create comprehensive comparison plots with violin plots and sample sizes
-fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-# Prepare data for plotting
-plot_data = unified_data[unified_data['trial_type'].isin(['onset', 'offset'])].copy()
-
-# Function to add sample sizes to plot
-def add_sample_sizes(ax, data, x_col, hue_col):
-    """Add sample size annotations to violin plot"""
-    # Get unique combinations
-    combinations = data.groupby([x_col, hue_col]).size().reset_index(name='n')
-    
-    # Position for text annotations
-    x_positions = {trial: i for i, trial in enumerate(data[x_col].unique())}
-    hue_positions = {group: i for i, group in enumerate(data[hue_col].unique())}
-    
-    # Calculate positions for each group
-    n_groups = len(data[hue_col].unique())
-    width = 0.8 / n_groups
-    
-    for _, row in combinations.iterrows():
-        x_pos = x_positions[row[x_col]]
-        hue_idx = hue_positions[row[hue_col]]
-        
-        # Adjust x position based on group
-        adjusted_x = x_pos + (hue_idx - (n_groups-1)/2) * width * 0.8
-        
-        # Add text at bottom of plot
-        ax.text(adjusted_x, ax.get_ylim()[0] + 0.02 * (ax.get_ylim()[1] - ax.get_ylim()[0]), 
-                f'n={row["n"]}', 
-                ha='center', va='bottom', fontsize=9, fontweight='bold')
-
-# Plot 1: Max pain by group and trial type
-sns.violinplot(data=plot_data, x='trial_type', y='abs_max_val', hue='group_label', palette=GROUP_COLORS, 
-               inner='box', ax=axes[0,0])
-axes[0,0].set_title('Max Pain by Clinical Group and Trial Type')
-axes[0,0].set_ylabel('Max Pain Rating')
-add_sample_sizes(axes[0,0], plot_data, 'trial_type', 'group_label')
-
-# Plot 2: Min pain by group and trial type
-sns.violinplot(data=plot_data, x='trial_type', y='abs_min_val', hue='group_label', palette=GROUP_COLORS,
-               inner='box', ax=axes[0,1])
-axes[0,1].set_title('Min Pain by Clinical Group and Trial Type')
-axes[0,1].set_ylabel('Min Pain Rating')
-add_sample_sizes(axes[0,1], plot_data, 'trial_type', 'group_label')
-
-# Plot 3: AUC by group and trial type
-sns.violinplot(data=plot_data, x='trial_type', y='auc_total', hue='group_label', palette=GROUP_COLORS,
-               inner='box', ax=axes[1,0])
-axes[1,0].set_title('AUC Total by Clinical Group and Trial Type')
-axes[1,0].set_ylabel('AUC Total')
-add_sample_sizes(axes[1,0], plot_data, 'trial_type', 'group_label')
-
-# Plot 4: Normalized pain change by group and trial type  
-sns.violinplot(data=plot_data, x='trial_type', y='abs_normalized_pain_change', hue='group_label', palette=GROUP_COLORS,
-               inner='box', ax=axes[1,1])
-axes[1,1].set_title('Normalized Pain Change by Clinical Group')
-axes[1,1].set_ylabel('Normalized Pain Change (%)')
-add_sample_sizes(axes[1,1], plot_data, 'trial_type', 'group_label')
-
-plt.tight_layout()
-plt.savefig(f'{FIGPATH}/raw_distributions_by_group.png', dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
-plt.show()
-
 # ========================================================
 # Plot OH and OA magnitude by clinical group box plot
-fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-order = ['Control', 'Low', 'High']
-
-for ax, trial_type, title in zip(
-    axes,
-    ['onset', 'offset'],
-    ['Onset Trials', 'Offset Trials']
-):
-    subset = unified_data[unified_data['trial_type'] == trial_type].copy()
-    
-    sns.violinplot(
-        data=subset,
-        x='group_label',
-        y='abs_normalized_pain_change',
-        order=order,
-        palette=GROUP_COLORS,
-        inner='box',
-        ax=ax
-    )
-    
-    sns.stripplot(
-        data=subset,
-        x='group_label',
-        y='abs_normalized_pain_change',
-        order=order,
-        color='black',
-        alpha=0.25,
-        size=3,
-        ax=ax
-    )
-    
-    ax.set_title(f'{title}: Normalized Pain Change')
-    ax.set_xlabel('Clinical Group')
-    ax.set_ylabel('Normalized Pain Change (%)')
-    ax.grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.savefig(f'{FIGPATH}/normalized_pain_change_by_group_split_by_trial_type.png',
-            dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
-plt.show()
+fig, ax = plt.subplots(figsize=(10, 6))
+oh_oa_data = unified_data[unified_data['trial_type'].isin(['onset', 'offset'])].copy()
+for trial_type in ['onset', 'offset']:
+    subset = oh_oa_data[oh_oa_data['trial_type'] == trial_type]
+    subset = subset[['group_label', 'abs_normalized_pain_change']].copy()
+    subset['trial_type'] = trial_type
+    if trial_type == 'onset':
+        subset = subset.rename(columns={'abs_normalized_pain_change': 'OH_magnitude'})
+    else:
+        subset = subset.rename(columns={'abs_normalized_pain_change': 'OA_magnitude'})
+    if trial_type == 'onset':
+        oh_data = subset
+    else:
+        oa_data = subset
 
 #%%
 # ==================================================================================================================
@@ -350,16 +236,12 @@ contrast_trials = unified_data[unified_data['trial_type'].isin(['onset', 'offset
 
 #%%
 # Analysis combinations
-# NEW 3/17/26: Split up positive and negative values
+# Split up positive and negative values
 analyses = [
     ('onset', 'preceding_abs_normalized_pain_change', 'negative', 'Negative Normalized Change'),
     ('onset', 'preceding_abs_normalized_pain_change', 'positive', 'Positive Normalized Change'),
-    # ('onset', 'preceding_abs_peak_to_peak', 'negative', 'Negative Peak to Peak'),
-    # ('onset', 'preceding_abs_peak_to_peak', 'positive', 'Positive Peak to Peak'),
     ('offset', 'preceding_abs_normalized_pain_change', 'negative', 'Negative Normalized Change'),
     ('offset', 'preceding_abs_normalized_pain_change', 'positive', 'Positive Normalized Change'),
-#     ('offset', 'preceding_abs_peak_to_peak', 'negative', 'Negative Peak to Peak'),
-#     ('offset', 'preceding_abs_peak_to_peak', 'positive', 'Positive Peak to Peak'),
 ]
 
 print("Creating plots and collecting correlations...")
@@ -479,124 +361,6 @@ plt.tight_layout()
 plt.show()
 
 #%%
-# ========================================================
-# STATISTICAL ANALYSIS: GROUP x SEQUENCE INTERACTIONS
-# Testing whether clinical groups differ in how previous contrast experiences affect current responses
-# Based on Kahneman et al. (1993) peak-end rule - using normalized pain change as measure of contrast experience
-# ========================================================
-print("\n=== TESTING GROUP x SEQUENCE INTERACTIONS ===")
-print("Research Question: Do clinical groups show different carryover effects from previous pain experiences?")
-
-# Test for group differences in sequence effects using LME
-sequence_results = {}
-
-for trial_type in ['onset', 'offset']:
-    print(f"\n{'='*60}")
-    print(f"{trial_type.upper()} SEQUENCE EFFECTS ANALYSIS")
-    print(f"{'='*60}")
-    
-    # Filter data - include ALL preceding trial types that have normalized pain change
-    analysis_data = contrast_trials[
-        (contrast_trials['trial_type'] == trial_type) & 
-        (contrast_trials['preceding_abs_normalized_pain_change'].notna()) &
-        (contrast_trials['abs_normalized_pain_change'].notna())
-    ].copy()
-    
-    print(f"Analysis dataset:")
-    print(f"  Total trials: {len(analysis_data)}")
-    print(f"  Subjects: {analysis_data['subject'].nunique()}")
-    print(f"  Preceding trial types: {analysis_data['preceding_trial_type'].value_counts().to_dict()}")
-    
-    print(f"\nSample sizes by group:")
-    sample_counts = analysis_data['group_label'].value_counts()
-    for group, count in sample_counts.items():
-        n_subjects = analysis_data[analysis_data['group_label'] == group]['subject'].nunique()
-        print(f"  {group}: {count} trials from {n_subjects} subjects")
-    
-    try:
-        print(f"\nFitting statistical models...")
-        
-        # Model 1: Main effects only
-        print("  Model 1: Main effects only")
-        model_main = mixedlm(
-            "abs_normalized_pain_change ~ C(group_label) + preceding_abs_normalized_pain_change", 
-            data=analysis_data,
-            groups=analysis_data["subject"]
-        )
-        result_main = model_main.fit(reml=False)
-        
-        # Model 2: With interaction
-        print("  Model 2: With group x sequence interaction")
-        model_interaction = mixedlm(
-            "abs_normalized_pain_change ~ C(group_label) * preceding_abs_normalized_pain_change", 
-            data=analysis_data,
-            groups=analysis_data["subject"]
-        )
-        result_interaction = model_interaction.fit(reml=False)
-        
-        # Likelihood ratio test for interaction
-        lr_stat = 2 * (result_interaction.llf - result_main.llf)
-        df_diff = len(result_interaction.params) - len(result_main.params)
-        p_interaction = 1 - stats.chi2.cdf(lr_stat, df=df_diff)
-        
-        print(f"\nMODEL COMPARISON:")
-        print(f"  Main effects model:")
-        print(f"    Log-likelihood: {result_main.llf:.2f}")
-        print(f"    AIC: {result_main.aic:.2f}")
-        print(f"    Parameters: {len(result_main.params)}")
-        
-        print(f"  Interaction model:")
-        print(f"    Log-likelihood: {result_interaction.llf:.2f}")
-        print(f"    AIC: {result_interaction.aic:.2f}")
-        print(f"    Parameters: {len(result_interaction.params)}")
-        
-        print(f"\nINTERACTION TEST:")
-        print(f"  Likelihood ratio: χ² = {lr_stat:.2f}, df = {df_diff}, p = {p_interaction:.4f}")
-        
-        # Determine significance and interpret
-        if p_interaction < 0.05:
-            sig_marker = "***" if p_interaction < 0.001 else "**" if p_interaction < 0.01 else "*"
-            print(f"  Result: SIGNIFICANT GROUP x SEQUENCE INTERACTION {sig_marker}")
-            print(f"  Interpretation: Clinical groups differ in how previous pain experiences affect current responses")
-            
-            print(f"\nINTERACTION MODEL DETAILS:")
-            print(result_interaction.summary())
-            
-        else:
-            print(f"  Result: NO SIGNIFICANT INTERACTION (p = {p_interaction:.4f})")
-            print(f"  Interpretation: All groups show similar carryover effects from previous trials")
-            
-            print(f"\nMAIN EFFECTS MODEL DETAILS:")
-            print(result_main.summary())
-            
-            # Interpret main effects
-            params = result_main.params
-            if 'preceding_abs_normalized_pain_change' in params.index:
-                sequence_effect = params['preceding_abs_normalized_pain_change']
-                print(f"\nMAIN EFFECTS INTERPRETATION:")
-                print(f"  Overall sequence effect: {sequence_effect:.4f}")
-                print(f"    → 1% increase in previous pain change → {sequence_effect:.4f}% change in current response")
-        
-        # Store results
-        sequence_results[trial_type] = {
-            'main_model': result_main,
-            'interaction_model': result_interaction,
-            'interaction_p': p_interaction,
-            'lr_stat': lr_stat,
-            'df_diff': df_diff,
-            'significant_interaction': p_interaction < 0.05,
-            'data': analysis_data,
-            'n_trials': len(analysis_data),
-            'n_subjects': analysis_data['subject'].nunique()
-        }
-        
-    except Exception as e:
-        print(f"  ERROR: Model fitting failed - {e}")
-        import traceback
-        traceback.print_exc()
-
-
-#%%
 # ================================================================================================================
 # ######################################## 3. HABITUATORS VS SENSITIZERS ANALYSIS ###############################
 # ================================================================================================================
@@ -712,10 +476,6 @@ print(trajectory_df['trajectory_classification'].value_counts())
 print(f"\nBy Clinical Group:")
 trajectory_summary = trajectory_df.groupby(['group_label', 'trajectory_classification']).size().unstack(fill_value=0)
 print(trajectory_summary)
-trajectory_df.to_csv(
-    f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trajectory_classifications.csv',
-    index=False
-)
 
 #%%
 # ========================================================
@@ -1096,8 +856,6 @@ for ttype in trial_types:
 # %%
 # Chi-squared analysis: trajectory classification vs clinical group
 print("\n=== CHI-SQUARED ANALYSIS: TRAJECTORY CLASSIFICATION vs CLINICAL GROUP ===")
-
-
 # Create contingency table
 trajectory_df['group_label'] = pd.Categorical(
     trajectory_df['group_label'],
@@ -1152,4 +910,134 @@ columns_of_interest = ['PCS_rumination','PCS_magnification','SPCS_QST','pain_now
 
 
 
-# %%
+# FIGURES FOR THE POSTER
+analyses = [
+    ('onset', 'preceding_abs_normalized_pain_change', 'negative', 'Negative Normalized Change'),
+    ('onset', 'preceding_abs_normalized_pain_change', 'positive', 'Positive Normalized Change'),
+    ('offset', 'preceding_abs_normalized_pain_change', 'negative', 'Negative Normalized Change'),
+    ('offset', 'preceding_abs_normalized_pain_change', 'positive', 'Positive Normalized Change'),
+]
+
+print("Creating plots and collecting correlations...")
+all_correlations = []
+fig, axes = plt.subplots(2, 2, figsize=(20, 12))
+
+for idx, (trial_type, preceding_metric, direction, metric_label) in enumerate(analyses):
+    row = idx // 2
+    col = idx % 2
+    ax = axes[row, col]
+    
+    # Y-axis: always 0 to 100 for onset, -100 to 0 for offset
+    if trial_type == 'onset':
+        ax.set_ylim(0, 101)
+    else:
+        ax.set_ylim(0, -101)
+    
+    # Filter data for this analysis with direction
+    base_data = contrast_trials[
+        (contrast_trials['trial_type'] == trial_type) & 
+        (contrast_trials[preceding_metric].notna()) &
+        (contrast_trials['abs_normalized_pain_change'].notna())
+    ]
+    
+    # Apply direction filter
+    if direction == 'positive':
+        plot_data = base_data[base_data[preceding_metric] > 0]
+        ax.set_xlim(0, 101)  # Focus on positive range
+    elif direction == 'negative':
+        plot_data = base_data[base_data[preceding_metric] < 0]
+        ax.set_xlim(0, -101)  # Focus on negative range
+    else:
+        plot_data = base_data
+    
+    # Add total sample size in title
+    total_n = len(plot_data)
+    ax.set_title(f'{trial_type.title()} - {metric_label}\n(N={total_n})', fontweight='bold', fontsize=10)
+    
+    if len(plot_data) > 10:
+        # Create scatter plot by group (for visualization)
+        for group in ['Control', 'Low', 'High']:
+            group_data = plot_data[plot_data['group_label'] == group]
+            if len(group_data) > 0:
+                ax.scatter(group_data[preceding_metric], 
+                          group_data['abs_normalized_pain_change'],
+                          color=GROUP_COLORS[group], 
+                          alpha=0.6, 
+                          label=f'{group} (n={len(group_data)})',
+                          s=50, edgecolors='black', linewidth=0.5)
+        
+        # CALCULATE correlation for ENTIRE dataset (all groups combined)
+        r, p = stats.pearsonr(plot_data[preceding_metric], 
+                             plot_data['abs_normalized_pain_change'])
+        
+        # STORE correlation for FDR correction later
+        all_correlations.append({
+            'idx': idx,
+            'trial_type': trial_type,
+            'metric': preceding_metric,
+            'direction': direction,
+            'metric_label': metric_label,
+            'r': r,
+            'p_raw': p,
+            'n': len(plot_data),
+            'ax': ax,  # Store axis reference
+            'plot_data': plot_data  # Store data for regression line
+        })
+    
+    # Formatting
+    ax.set_xlabel('Preceding Trial Normalized Pain Change (%)')
+    ax.set_ylabel('Current Normalized Pain Change (%)')
+    ax.legend(fontsize=8, loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+# NOW apply FDR correction and add regression lines/stats to existing plots
+if all_correlations:
+    p_values = [corr['p_raw'] for corr in all_correlations]
+    rejected, p_corrected, _, _ = multipletests(p_values, method='fdr_bh', alpha=0.05)
+    
+    for i, corr in enumerate(all_correlations):
+        corr['p_corrected'] = p_corrected[i]
+        corr['significant'] = rejected[i]
+        
+        # Add regression line for the ENTIRE dataset if significant
+        if corr['significant']:
+            plot_data = corr['plot_data']
+            z = np.polyfit(plot_data[corr['metric']], 
+                          plot_data['abs_normalized_pain_change'], 1)
+            p_fit = np.poly1d(z)
+            x_range = np.linspace(plot_data[corr['metric']].min(), 
+                                plot_data[corr['metric']].max(), 100)
+            corr['ax'].plot(x_range, p_fit(x_range), 
+                           color='black',  # Use black for overall correlation
+                           linestyle='-', linewidth=3, alpha=0.8,
+                           label=f'Overall trend')
+        
+        # Add correlation text for overall correlation
+        sig_marker = "***" if corr['p_corrected'] < 0.001 else \
+                    "**" if corr['p_corrected'] < 0.01 else \
+                    "*" if corr['p_corrected'] < 0.05 else "ns"
+        
+        corr['ax'].text(0.05, 0.95, 
+                       f'Overall: r={corr["r"]:.3f}, p={corr["p_corrected"]:.3f} {sig_marker}',
+                       transform=corr['ax'].transAxes, fontsize=10,
+                       color='black', fontweight='bold',
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.8))
+    
+    print(f"Multiple comparisons correction applied to {len(all_correlations)} plots")
+    significant_count = sum(corr['significant'] for corr in all_correlations)
+    print(f"Significant after FDR correction: {significant_count}/{len(all_correlations)}")
+
+plt.suptitle('Trial Sequence Effects - Overall Correlations by Direction (FDR Corrected)', 
+             fontsize=16, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f"/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/OH_OA_NormPainChange_PrecedingNormPainChange_PosNeg_Full.svg")
+plt.show()
+
+# Print summary of results
+print("\nSummary of correlations:")
+for corr in all_correlations:
+    print(f"{corr['trial_type'].title()} - {corr['metric_label']}: "
+          f"r={corr['r']:.3f}, p_raw={corr['p_raw']:.3f}, "
+          f"p_corrected={corr['p_corrected']:.3f}, "
+          f"significant={'Yes' if corr['significant'] else 'No'}")
+

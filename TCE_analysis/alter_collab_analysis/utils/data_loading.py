@@ -6,13 +6,14 @@ import sqlite3
 # Constants
 KNEEOA_SUBJECT_OFFSET = 1000
 CLBP_SUBJECT_OFFSET = 2000
+SEEG_SUBJECT_OFFSET = 3000
 
 def load_dataset(dataset_name, base_path):
     """
     Load a single dataset's trial metrics and optionally time series.
     
     Parameters:
-        dataset_name: 'kneeOA', 'plosONE', 'cLBP'
+        dataset_name: 'kneeOA', 'plosONE', 'cLBP', 'sEEG'
         base_path: Base directory path
     
     Returns:

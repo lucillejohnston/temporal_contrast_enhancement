@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Pick the dataset to preprocess
-dataset = 'kneeOA' # options: 'plosONE', 'kneeOA', 'cLBP' (updated 4/28/26)
+dataset = 'cLBP' # options: 'plosONE', 'kneeOA', 'cLBP', 'sEEG' (updated 4/28/26)
 with open(f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data.json') as f:
     data = json.load(f)
 trial_data = pd.DataFrame(data)
@@ -58,7 +58,6 @@ def resample_trials(trial_df, freq='100ms', dataset=None):
     Both 'relative_time' and 'actual_time' are downsampled/interpolated.
     """
     trial_df = trial_df.copy()
-    
     # Set actual_time as index for resampling
     trial_df['actual_time'] = pd.to_datetime(trial_df['actual_time'])
     trial_df = trial_df.set_index('actual_time').sort_index()
@@ -66,21 +65,22 @@ def resample_trials(trial_df, freq='100ms', dataset=None):
         # Resample numeric columns
         numeric_cols = ['temperature', 'pain', 'relative_time']
         df_resampled = trial_df[numeric_cols].resample(freq).mean()
+        # Reset index so actual_time becomes a column again
+        df_resampled = df_resampled.reset_index()
     elif dataset == 'cLBP':
         # Resample temperature and relative_time with mean 
         df_temp = trial_df[['temperature','relative_time']].resample(freq).mean()
-        # Resample pain to preserve sparse  values 
-        df_pain = trial_df[['pain']].resample(freq).first() # use first to preserve pain ratings
+        # Keep pain values sparse, but assign them to the 10Hz bins without averaging
+        df_pain = trial_df[['pain']].resample(freq).first()
         df_resampled = pd.concat([df_temp, df_pain], axis=1)
+        # Reset index so actual_time becomes a column again
+        df_resampled = df_resampled.reset_index()
+        df_resampled['aligned_time'] = df_resampled['relative_time']
 
-    # Reset index so actual_time becomes a column again
-    df_resampled = df_resampled.reset_index()
-   
     # Add back non-numeric columns
     for col in ['subject','trial_num','trial_type','study','group_label','site','spot','notes']:
         if col in trial_df.columns:
             df_resampled[col] = trial_df[col].iloc[0] # use the first value in each resampled bin
-    
     return df_resampled
 
 def align_trials_time(timeseries_dict, smoothing=True, smoothing_window=10,
@@ -108,16 +108,12 @@ def align_trials_time(timeseries_dict, smoothing=True, smoothing_window=10,
     """
     aligned_dict = {}
     for key, df in timeseries_dict.items():
-        df = df.copy()
-        if smoothing:
-            # Smooth the temperature values using a rolling mean and fill any NaN values.
+        if smoothing: # Smooth the temperature values using a rolling mean and fill any NaN values.
             df['temp'] = df['temperature'].rolling(window=smoothing_window, center=True).mean()
             df['temp'] = df['temp'].bfill().ffill()
-        else:
-            # If smoothing is not enabled, use the raw temperature values.
+        else: # If smoothing is not enabled, use the raw temperature values.
             df['temp'] = df['temperature']
         df = df.set_index('relative_time')
-        trial_type_name = df['trial_type'].dropna().iloc[0]
 
         # Calculate baseline temperature from first baseline_window seconds
         first_time = df.index.min()
@@ -128,7 +124,7 @@ def align_trials_time(timeseries_dict, smoothing=True, smoothing_window=10,
             baseline_temp = df['temp'].iloc[:5].mean()
             print(f"⚠️  Trial {key}: Only {baseline_mask.sum()} points in first {baseline_window}s, using first 5 points for baseline")
         else:
-            baseline_temp = df.loc[baseline_mask, 'temp'].mean()
+            baseline_temp = df.loc[baseline_mask, 'temp'].mean() # Assumes the first second is baseline temp 
 
         # Find rise onset: first time temp exceeds baseline + rise_threshold
         target_temp = baseline_temp + rise_threshold
@@ -250,23 +246,32 @@ if sampling_rates:
 else:
     print("⚠️  Unable to calculate sampling rates")
 
-# Downsample to 10Hz if needed 
-if len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) > 10:
-    print("  Downsampling to 10Hz for consistency")
+if dataset in ['kneeOA', 'plosONE', 'sEEG']:
+    if len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) > 10:
+        print("  Downsampling to 10Hz for consistency")
+        timeseries_10hz_dict = {}
+        for key, df in timeseries_dict.items():
+            df_10hz = resample_trials(df, freq='100ms', dataset=dataset)
+            timeseries_10hz_dict[key] = df_10hz
+    elif len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) == 10:
+        print("  Data already at 10Hz, no downsampling needed")
+        timeseries_10hz_dict = timeseries_dict
+    elif len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) < 10:
+        print(f" Sampling rate is {np.median(list(sampling_rates.values()))} Hz, no downsampling needed")
+        timeseries_10hz_dict = timeseries_dict
+
+    aligned_dict = align_trials_time(timeseries_10hz_dict, smoothing=False, smoothing_window=10)
+
+elif dataset == 'cLBP':
+    print("  Using cLBP-specific resampling")
     timeseries_10hz_dict = {}
+
     for key, df in timeseries_dict.items():
-        df_10hz = resample_trials(df, freq='100ms',dataset=dataset)
+        df_10hz = resample_trials(df, freq='100ms', dataset='cLBP')
         timeseries_10hz_dict[key] = df_10hz
-elif len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) == 10:
-    print("  Data already at 10Hz, no downsampling needed")
-    timeseries_10hz_dict = timeseries_dict
-elif len(sampling_rates) > 0 and np.median(list(sampling_rates.values())) < 10: # cLBP pain data is sampled at 1Hz
-    print(f" Sampling rate is {np.median(list(sampling_rates.values()))} Hz, no downsampling needed")
 
-# Align trials in time
-aligned_dict = align_trials_time(timeseries_10hz_dict, smoothing=False, smoothing_window=10)
-
-
+    aligned_dict = timeseries_10hz_dict
+            
 #%% CLEAN THE DATA 
 """
 Cleaning is done manually by looking through the trials has to be done manually and separately for each dataset
@@ -364,7 +369,7 @@ for key in zero_pain_trials:
     fig, ax1 = plt.subplots(figsize=(10, 4))
     
     # Temperature on left y-axis
-    ax1.plot(df.index, df['temperature'], color='blue', label='Temperature')
+    ax1.plot(df['aligned_time'], df['temperature'], color='blue', label='Temperature')
     ax1.set_xlabel("Aligned Time (s)")
     ax1.set_xlim(0, 60)
     ax1.set_ylabel("Temperature", color='blue')
@@ -373,7 +378,7 @@ for key in zero_pain_trials:
     
     # Pain on right y-axis
     ax2 = ax1.twinx()
-    ax2.plot(df.index, df['pain'], color='red', label='Pain')
+    ax2.plot(df['aligned_time'], df['pain'], color='red', label='Pain')
     ax2.set_ylabel("Pain", color='red')
     ax2.tick_params(axis='y', labelcolor='red')
     ax2.set_ylim(0, 100)
@@ -473,7 +478,7 @@ if dataset == 'plosONE':
         plt.legend()
         plt.grid(True)
         plt.show()
-elif dataset == 'kneeOA':
+elif dataset in ['kneeOA', 'cLBP']:
     selected_trials = zero_pain_trial_strs + flat_temp_trial_strs
     aligned_dict = {
         key: df for key, df in aligned_dict.items()
@@ -493,7 +498,7 @@ elif dataset == 'kneeOA':
     for trial_type, dfs in trial_type_groups.items():
         plt.figure(figsize=(10, 6))
         for df in dfs:
-            plt.plot(df.index, df['temperature'], alpha=0.5)
+            plt.plot(df['aligned_time'], df['temperature'], alpha=0.5)
         plt.xlabel("Time from Temperature Rise Onset (seconds)")
         plt.ylabel("Temperature (°C)")
         plt.xlim(-15, 60)
@@ -507,7 +512,11 @@ elif dataset == 'kneeOA':
 dfs_with_time = []
 for key, df in aligned_dict.items():
     df = df.copy()
-    df['aligned_time'] = df.index  # Save the aligned time as a column
+
+    # Keep aligned_time if it already exists
+    if 'aligned_time' not in df.columns:
+        df['aligned_time'] = df.index
+
     df['subject'] = key[0]
     df['trial_num'] = key[1]
     dfs_with_time.append(df)
@@ -582,7 +591,7 @@ if matched_calibration:
 #%%
 columns_to_save = [
     'subject', 'trial_num', 'trial_type', 'temperature', 'pain',
-    'aligned_time', 'original_trial_type', 'group', 'site', 'spot'
+    'aligned_time', 'original_trial_type', 'group', 'site', 'spot', 'study'
 ]
 cleaned_aligned_df = cleaned_aligned_df[[col for col in columns_to_save if col in cleaned_aligned_df.columns]]
 print(cleaned_aligned_df.head())
@@ -605,79 +614,84 @@ for (subject, trial_num), trial_df in cleaned_aligned_df.groupby(['subject', 'tr
     if trial_num > 3:
         break
 
-# %%
+
+
+
+
+# %% 
 # Preprocess data: cut trials at -5s to 60s and resample at 1Hz
 # This makes each trial shorter for faster paramater optimization and model fitting
-from scipy.interpolate import interp1d
-CUTOFF_TIME = 60.0  # seconds
-BASELINE_START = -5.0 # seconds
-TARGET_SAMPLE_RATE = 1.0 # Hz - downsampling for optimization speed
-preprocessed_data = []
+if dataset != 'cLBP':
+    from scipy.interpolate import interp1d
+    CUTOFF_TIME = 60.0  # seconds
+    BASELINE_START = -5.0 # seconds
+    TARGET_SAMPLE_RATE = 1.0 # Hz - downsampling for optimization speed
+    preprocessed_data = []
 
-for subject in cleaned_aligned_df['subject'].unique():
-    subject_data = cleaned_aligned_df[cleaned_aligned_df['subject'] == subject]
-    
-    for trial_num in subject_data['trial_num'].unique():
-        trial_data = subject_data[subject_data['trial_num'] == trial_num].copy()
+    for subject in cleaned_aligned_df['subject'].unique():
+        subject_data = cleaned_aligned_df[cleaned_aligned_df['subject'] == subject]
         
-        # Clean and sort
-        clean_data = trial_data.dropna(subset=['aligned_time', 'temperature', 'pain']).copy()
-        clean_data = clean_data.sort_values('aligned_time').reset_index(drop=True)
-        
-        if len(clean_data) < 2:
-            continue
-        
-        # Cut at CUTOFF_TIME
-        clean_data = clean_data[(clean_data['aligned_time'] >= BASELINE_START) & 
-                                (clean_data['aligned_time'] <= CUTOFF_TIME)].copy()
-        
-        if len(clean_data) < 2:
-            continue
-        
-        # Resample at 5Hz
-        time_min = clean_data['aligned_time'].min()
-        time_max = clean_data['aligned_time'].max()
-        
-        # Create new time grid at 5Hz
-        new_time = np.arange(time_min, time_max, 1.0 / TARGET_SAMPLE_RATE)
-        
-        if len(new_time) < 2:
-            continue
-        
-        # Interpolate temperature and pain onto new time grid
-        temp_interp = interp1d(clean_data['aligned_time'].values, 
-                              clean_data['temperature'].values,
-                              kind='linear', bounds_error=False, fill_value='extrapolate')
-        
-        pain_interp = interp1d(clean_data['aligned_time'].values,
-                              clean_data['pain'].values, 
-                              kind='linear', bounds_error=False, fill_value='extrapolate')
-        
-        # Create resampled dataframe
-        resampled_trial = pd.DataFrame({
-            'subject': subject,
-            'trial_num': trial_num,
-            'aligned_time': new_time,
-            'temperature': temp_interp(new_time),
-            'pain': pain_interp(new_time)
-        })
-        
-        preprocessed_data.append(resampled_trial)
+        for trial_num in subject_data['trial_num'].unique():
+            trial_data = subject_data[subject_data['trial_num'] == trial_num].copy()
+            
+            # Clean and sort
+            clean_data = trial_data.dropna(subset=['aligned_time', 'temperature', 'pain']).copy()
+            clean_data = clean_data.sort_values('aligned_time').reset_index(drop=True)
+            
+            if len(clean_data) < 2:
+                continue
+            
+            # Cut at CUTOFF_TIME
+            clean_data = clean_data[(clean_data['aligned_time'] >= BASELINE_START) & 
+                                    (clean_data['aligned_time'] <= CUTOFF_TIME)].copy()
+            
+            if len(clean_data) < 2:
+                continue
+            
+            # Resample at 1Hz
+            time_min = clean_data['aligned_time'].min()
+            time_max = clean_data['aligned_time'].max()
+            
+            # Create new time grid at 1Hz
+            new_time = np.arange(time_min, time_max, 1.0 / TARGET_SAMPLE_RATE)
+            
+            if len(new_time) < 2:
+                continue
+            
+            # Interpolate temperature and pain onto new time grid
+            temp_interp = interp1d(clean_data['aligned_time'].values, 
+                                clean_data['temperature'].values,
+                                kind='linear', bounds_error=False, fill_value='extrapolate')
+            
+            pain_interp = interp1d(clean_data['aligned_time'].values,
+                                clean_data['pain'].values, 
+                                kind='linear', bounds_error=False, fill_value='extrapolate')
+            
+            # Create resampled dataframe
+            resampled_trial = pd.DataFrame({
+                'subject': subject,
+                'trial_num': trial_num,
+                'aligned_time': new_time,
+                'temperature': temp_interp(new_time),
+                'pain': pain_interp(new_time)
+            })
+            
+            preprocessed_data.append(resampled_trial)
 
-# Combine all preprocessed trials
-data_df_preprocessed = pd.concat(preprocessed_data, ignore_index=True)
+    # Combine all preprocessed trials
+    data_df_preprocessed = pd.concat(preprocessed_data, ignore_index=True)
 
-print(f"✅ Preprocessing complete:")
-print(f"   Original data: {len(cleaned_aligned_df)} rows")
-print(f"   Preprocessed data: {len(data_df_preprocessed)} rows")
-print(f"   Subjects: {len(data_df_preprocessed['subject'].unique())}")
-print(f"   Average points per trial: {len(data_df_preprocessed) / len(data_df_preprocessed.groupby(['subject', 'trial_num'])):.1f}")
+    print(f"✅ Preprocessing complete:")
+    print(f"   Original data: {len(cleaned_aligned_df)} rows")
+    print(f"   Preprocessed data: {len(data_df_preprocessed)} rows")
+    print(f"   Subjects: {len(data_df_preprocessed['subject'].unique())}")
+    print(f"   Average points per trial: {len(data_df_preprocessed) / len(data_df_preprocessed.groupby(['subject', 'trial_num'])):.1f}")
 
-# Save preprocessed data to JSON
-data_df_preprocessed.to_json(
-    f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_trimmed_downsampled.json',
-    orient='records',
-    date_format='iso'
-)
+    # Save preprocessed data to JSON
+    data_df_preprocessed.to_json(
+        f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_trimmed_downsampled.json',
+        orient='records',
+        date_format='iso'
+    )
 
 # %%
