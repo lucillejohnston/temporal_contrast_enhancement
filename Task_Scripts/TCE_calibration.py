@@ -35,9 +35,9 @@ ramp_speed = [1.5,1.5,1.5,1.5,1.5] # °C/s
 return_speed = [6,6,6,6,6] # °C/s
 #target_generator = tcs.target_zone_generator()  # Create a target zone generator
 #thermode_port = 'COM7' ########## CHANGE TO MATCH DEVICE ##########
-thermode_port = '/dev/tty.usbmodem11401'
+thermode_port = '/dev/tty.usbmodem1401'
 #vas_port = 'COM6' ########## CHANGE TO MATCH DEVICE #########
-vas_port = '/dev/tty.usbmodem11301'
+vas_port = '/dev/tty.usbmodem1101'
 # ttl_port_name = '/dev/tty.usbserial-BBTKUSBTTL'
 # ttl_serial = open_serial_port(ttl_port_name)
 

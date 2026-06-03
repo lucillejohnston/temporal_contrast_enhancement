@@ -604,26 +604,41 @@ analysis_data = unified_data.copy()
 # ========================================================
 # CALCULATE PAIN TRAJECTORIES FOR EACH SUBJECT
 # ========================================================
-
-def calculate_pain_trajectory(subject_data):
-    """Calculate pain trajectory using max pain over all trials"""
-    # Use all trial types, not just contrast trials
-    clean_data = subject_data.dropna(subset=['abs_max_val', 'trial_num']).sort_values('trial_num')
+# THE OLD WAY BASED ON SLOPE OF MAX PAIN
+# def calculate_pain_trajectory(subject_data):
+#     """Calculate pain trajectory using max pain over all trials"""
+#     # Use all trial types, not just contrast trials
+#     clean_data = subject_data.dropna(subset=['abs_max_val', 'trial_num']).sort_values('trial_num')
     
-    if len(clean_data) < 3:
+#     if len(clean_data) < 3:
+#         return np.nan, np.nan, np.nan
+    
+#     if clean_data['abs_max_val'].var() == 0:
+#         return 0.0, np.nan, np.nan
+    
+#     try:
+#         slope, intercept, r_value, p_value, std_err = stats.linregress(
+#             clean_data['trial_num'],
+#             clean_data['abs_max_val']
+#         )
+#         return slope, r_value, p_value
+#     except:
+#         return np.nan, np.nan, np.nan
+
+# A NEW WAY BASED ON NORMALIZED PAIN CHANGE ON HOLD TRIALS
+def calculate_pain_trajectory(subject_data):
+    """Calculate pain trajectory using sign of normalized pain change on hold trials"""
+    hold_data = subject_data[
+        subject_data['trial_type'].isin(['t1_hold', 't2_hold'])
+    ].dropna(subset=['abs_normalized_pain_change', 'trial_num']).sort_values('trial_num')
+    
+    if len(hold_data) < 3:
         return np.nan, np.nan, np.nan
     
-    if clean_data['abs_max_val'].var() == 0:
+    if hold_data['abs_normalized_pain_change'].var() == 0:
         return 0.0, np.nan, np.nan
     
-    try:
-        slope, intercept, r_value, p_value, std_err = stats.linregress(
-            clean_data['trial_num'],
-            clean_data['abs_max_val']
-        )
-        return slope, r_value, p_value
-    except:
-        return np.nan, np.nan, np.nan
+    # 
 
 # Calculate trajectories for each subject
 print("Calculating pain trajectories for each subject...")

@@ -20,8 +20,7 @@ from utils.plotting_functions import *
 
 # Path to the cleaned, aligned trial data
 dataset = 'cLBP' # options: 'plosONE', 'kneeOA', 'cLBP'
-
-DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
+DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_trimmed_downsampled.json' # changed this to trimmed_downsampled so it is consistently 1Hz sampling across all datasets
 OUTPUT_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
 
 temp_change_offset = 0.67 # seconds, changing 1C in 1.5C/s

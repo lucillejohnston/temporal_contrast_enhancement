@@ -55,7 +55,7 @@ class eVASSlider:
 # change port as needed 
 # ----------------------------------------
 if __name__ == "__main__":
-    slider = eVASSlider(port= '/dev/tty.usbmodem11301')     #'COM7') 
+    slider = eVASSlider(port= '/dev/tty.usbmodem1101')     #'COM7') 
     while True:
         value = slider.get_value()
         print("Slider value:", value)

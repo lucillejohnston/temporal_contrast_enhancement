@@ -6,16 +6,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-import json
+import json, sys
 from scipy import stats
-from TCE_analysis.alter_collab_analysis.utils.plotting_functions import *  
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis') # add main TCE_analysis folder to path
+from alter_collab_analysis.utils.plotting_functions import *  
 
-# dataset
-dataset = 'kneeOA' # options: 'kneeOA', 'plosONE', 'combined'
+# dataset -  single dataset currently
+dataset = 'plosONE' # options: 'kneeOA', 'plosONE', 'cLBP', 'sEEG'
 
 # File paths
 TRIAL_METRICS_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
-TRIAL_DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
+TRIAL_DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_trimmed_downsampled.json'
 FIG_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/'
 # Load the metrics data
 with open(TRIAL_METRICS_PATH, 'r') as f:
@@ -46,146 +47,300 @@ elif dataset == 'plosONE':
     stepped_trial_types = ['offset', 'inv']
 # %% 
 # =====================================================================
-# Determine habituators vs. sensitizers based on pain trajectory
+# Determine habituators vs. sensitizers 
 # =====================================================================
-def calculate_pain_trajectory(subject_data):
-    # Use the max pain column
-    clean_data = subject_data.dropna(subset=['abs_max_val', 'trial_num'])
+# Primary metric: slope of period C of hold trials (maybe as a whole or in sliding windows)
+def calculate_slope(trial_data, C_start=None, C_end=None):
+    period_c_data = trial_data[(trial_data['aligned_time'] >= C_start) & (trial_data['aligned_time'] <= C_end)]
+    x = period_c_data['aligned_time'].to_numpy()
+    y = period_c_data['pain'].to_numpy()
+    if len(np.unique(x)) < 2:
+        return np.nan
+    slope, intercept, r, p, se = stats.linregress(x, y)
+    return slope 
+
+# Sensitivity analysis 1: windowed early vs. late difference (mean of last 5 s of hold - mean of first 5s of hold)
+def calculate_windowed_difference(trial_data, window_size=5, A_start=None, C_end=None):
+    early_window = trial_data[(trial_data['aligned_time'] >= A_start) & (trial_data['aligned_time'] < A_start + window_size)]
+    late_window = trial_data[(trial_data['aligned_time'] <= C_end) & (trial_data['aligned_time'] > C_end - window_size)]
     
-    if len(clean_data) < 3:
-        return np.nan, np.nan, np.nan
+    if len(early_window) == 0 or len(late_window) == 0:
+        return np.nan
     
-    if clean_data['abs_max_val'].var() == 0:
-        return 0.0, np.nan, np.nan
+    early_mean = early_window['pain'].mean()
+    late_mean = late_window['pain'].mean()
     
-    try:
-        slope, intercept, r_value, p_value, std_err = stats.linregress(
-            clean_data['trial_num'],
-            clean_data['abs_max_val']
-        )
-        return slope, r_value, p_value
-    except:
-        return np.nan, np.nan, np.nan
+    return late_mean - early_mean
 
-# Calculate trajectories
-subject_trajectories = []
-for subject, subj_df in trial_metrics_df.groupby('subject'):
-    slope, r_val, p_val = calculate_pain_trajectory(subj_df)
-    subject_trajectories.append({
-        'subject': subject,
-        'slope': slope,
-        'r_value': r_val,
-        'p_value': p_val
-    })
-trajectory_df = pd.DataFrame(subject_trajectories)
+# Sensitivity analysis 2: AUC last 10s - AUC first 10s of hold
+def calculate_auc_difference(trial_data, window_size=10, A_start=None, C_end=None):
+    
+    early_window = trial_data[(trial_data['aligned_time'] >= A_start) & (trial_data['aligned_time'] < A_start + window_size)]
+    late_window = trial_data[(trial_data['aligned_time'] <= C_end) & (trial_data['aligned_time'] > C_end - window_size)]
+    
+    if len(early_window) == 0 or len(late_window) == 0:
+        return np.nan
+    
+    early_auc = np.trapezoid(early_window['pain'], early_window['aligned_time'])
+    late_auc = np.trapezoid(late_window['pain'], late_window['aligned_time'])
+    
+    return late_auc - early_auc
 
-# Calculate slopes for all subjects
-subject_slopes = []
-for subject in trial_metrics_df['subject'].unique():
-    subj_data = trial_metrics_df[trial_metrics_df['subject'] == subject]
-    if len(subj_data) > 3:  # Need minimum trials
-        slope, intercept, r_value, p_value, std_err = stats.linregress(
-            subj_data['trial_num'], 
-            subj_data['abs_max_val']
-        )
-        subject_slopes.append({
-            'subject': subject,
-            'slope': slope,
-            'r_value': r_value,
-            'p_value': p_value
-        })
-slopes_df = pd.DataFrame(subject_slopes)
+# Sensitivity analysis 3: normalized time-aware pain change (second extrema - first extrema) / max 
+def calculate_normalized_time_aware_change(row, max_floor=5):
+    min_val = row.get('abs_min_val')
+    max_val = row.get('abs_max_val')
+    min_time = row.get('abs_min_time')
+    max_time = row.get('abs_max_time')
+    if pd.isna(min_val) or pd.isna(max_val) or pd.isna(min_time) or pd.isna(max_time):
+        return np.nan
 
-# Plot distribution of slopes
-plt.figure(figsize=(8, 6))
-plt.hist(slopes_df['slope'], bins=15, alpha=0.7, color='skyblue', edgecolor='black')
-plt.axvline(x=0, color='red', linestyle='--', label='No change')
-plt.xlabel('Max Pain Slope (points per trial)')
-plt.ylabel('Number of Subjects')
-plt.title('Distribution of Individual Pain Trajectories')
-plt.legend()
-plt.savefig(f'{FIG_PATH}distribution_of_individual_pain_trajectories.png', dpi=300, bbox_inches='tight')
-plt.show()
+    if max_val <= max_floor or max_val == 0:
+        return np.nan
 
-print(f"Mean slope: {slopes_df['slope'].mean():.2f} points per trial")
-print(f"Subjects with positive slopes (sensitizers): {(slopes_df['slope'] > 0).sum()}")
-print(f"Subjects with negative slopes (habituators): {(slopes_df['slope'] < 0).sum()}")
-
-# Classify subjects
-def classify_subject(row):
-    if row['slope'] < 0 and row['p_value'] < 0.05:
-        return 'habituator'
-    elif row['slope'] > 0 and row['p_value'] < 0.05:
-        return 'sensitizer'
+    # first extrema in time, second extrema in time
+    if min_time <= max_time:
+        first_ext = min_val
+        second_ext = max_val
     else:
-        return 'no_trend'
+        first_ext = max_val
+        second_ext = min_val
 
-trajectory_df['classification'] = trajectory_df.apply(classify_subject, axis=1)
+    return (second_ext - first_ext) / max_val * 100
 
-# Look at distribution of classifications based on group labels
+hold_trials = trial_metrics_df[trial_metrics_df['trial_type'].str.contains('hold')].copy()
+results = []
+for _, row in hold_trials.iterrows():
+    subject_id = row['subject']
+    trial_num = row['trial_num']
+    c_start = row['C_start']
+    c_end = row['C_end']
+    a_start = row['A_start']
+
+    trial_ts = time_series_df[
+        (time_series_df['subject'] == subject_id) &
+        (time_series_df['trial_num'] == trial_num)
+    ].copy()
+
+    if len(trial_ts) < 2:
+        continue
+
+    slope = calculate_slope(trial_ts, C_start=c_start, C_end=c_end)
+    diff_5s = calculate_windowed_difference(trial_ts, window_size=5, A_start=a_start, C_end=c_end)
+    diff_10s = calculate_windowed_difference(trial_ts, window_size=10, A_start=a_start, C_end=c_end)
+    auc_diff_10s = calculate_auc_difference(trial_ts, window_size=10, A_start=a_start, C_end=c_end)
+    norm_change = calculate_normalized_time_aware_change(row, max_floor=5)
+
+    results.append({
+        'subject': subject_id,
+        'trial_num': trial_num,
+        'trial_type': row['trial_type'],
+        'slope': slope,
+        'late5_minus_early5': diff_5s,
+        'late10_minus_early10': diff_10s,
+        'auc_diff_10s': auc_diff_10s,
+        'time_aware_norm_change': norm_change
+    })
+
+hold_metrics_df = pd.DataFrame(results)
+# Plot histograms of each metric across all hold trials
+for col in hold_metrics_df.columns[3:]:
+    vals = hold_metrics_df[col].dropna()
+    plt.figure(figsize=(10,6))
+    plt.hist(vals, bins='auto', edgecolor='black')
+    plt.title(f'Distribution of {col} across hold trials')
+    plt.xlabel(col)
+    plt.ylabel('Count')
+    plt.tight_layout()
+    plt.show()
 
 # %%
 # ==========================================================================
 # Split into HABITUATORS vs. SENSITIZERS and PLOT EXAMPLE for each 
 # ==========================================================================
 
-###################################################################################### Classify subjects
-threshold = 1 # for now, set a threshold for slope classification (eventually in some data-driven way)
-def classify_trajectory(slope):
-    if slope < -threshold:
-        return 'habituator'
-    elif slope > threshold:
-        return 'sensitizer'
-    else:
-        return 'no_trend'
-    
-trajectory_df['trajectory_group'] = trajectory_df['slope'].apply(classify_trajectory)
-print(trajectory_df['trajectory_group'].value_counts())
+# Average across hold trials per subject to get a single classification metric per subject
+hold_metrics_avg_per_subject = hold_metrics_df.groupby('subject')[[
+    'slope',
+    'late5_minus_early5',
+    'late10_minus_early10',
+    'auc_diff_10s',
+    'time_aware_norm_change'
+]].mean().reset_index()
 
-# Merge with trial_metrics_df
-trial_metrics_df = trial_metrics_df.merge(
-    trajectory_df[['subject', 'trajectory_group']], 
-    on='subject', 
+# Plot histograms of each subject rather than each trial
+for col in hold_metrics_avg_per_subject.columns[1:]:
+    vals = hold_metrics_avg_per_subject[col].dropna()
+
+    plt.figure(figsize=(10,6))
+    plt.hist(vals, bins='auto', edgecolor='black')
+    plt.title(f'Subject-level distribution of {col}')
+    plt.xlabel(col)
+    plt.ylabel('Count')
+    plt.tight_layout()
+    plt.show()
+hold_metrics_avg_per_subject.describe()
+
+###################################################################################### Classify subjects
+# Bootstrapping approach to determine classification based on any metric
+def bootstrap_classification(metric_values, n_boot=10000, ci=95, random_state=None):
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    metric_values = metric_values.dropna().values
+    if len(metric_values) == 0:
+        print("Warning: No valid metric values for classification. Returning 'unclassified'.")
+        return 'unclassified', np.nan, np.nan, np.nan
+
+    # Calculate observed mean
+    observed_mean = np.mean(metric_values)
+
+    # Generate bootstrap samples and calculate means
+    bootstrap_means = []
+    for _ in range(n_boot):
+        sample = np.random.choice(metric_values, size=len(metric_values), replace=True)
+        bootstrap_means.append(np.mean(sample))
+
+    # Calculate confidence interval
+    lower_bound = np.percentile(bootstrap_means, (100 - ci) / 2)
+    upper_bound = np.percentile(bootstrap_means, 100 - (100 - ci) / 2)
+
+    # Classify based on whether CI is above or below zero
+    if lower_bound > 0:
+        classification = 'sensitizer'
+    elif upper_bound < 0:
+        classification = 'habituator'
+    else:
+        classification = 'non-responder'
+    print(".")
+    return classification, observed_mean, lower_bound, upper_bound
+
+classification_results = []
+for subject_id, subject_trials in hold_metrics_df.groupby('subject'):
+    classification, observed_mean, lower_bound, upper_bound = (
+        bootstrap_classification(subject_trials['slope'], 
+                                 n_boot=10000, ci=95, random_state=42
+                                )
+    )
+    classification_results.append({
+        'subject': subject_id,
+        'n_trials': len(subject_trials),
+        'observed_mean_slope': observed_mean,
+        'classification': classification,
+        'ci_lower': lower_bound,
+        'ci_upper': upper_bound,
+    })
+
+slope_classification_df = pd.DataFrame(classification_results)
+
+#%% Plot results of the classification
+# Plot classification results
+plot_df = hold_metrics_avg_per_subject.merge(
+    slope_classification_df[['subject','classification']],
+    on='subject',
     how='left'
 )
-####################################################################################### Plot example subject for each group
-# Example habituator
-example_subject = trajectory_df[trajectory_df['slope'] < -3]['subject'].iloc[0]
-subj_data = trial_metrics_df[trial_metrics_df['subject'] == example_subject].sort_values('trial_num')
-plt.figure(figsize=(8, 6))
-plt.scatter(subj_data['trial_num'], subj_data['abs_max_val'], alpha=0.7, s=60)
-subject_slope_info = trajectory_df[trajectory_df['subject'] == example_subject].iloc[0]
-slope = subject_slope_info['slope']
-r_value = subject_slope_info['r_value']
-p_value = subject_slope_info['p_value']
-# Add regression line
-x_vals = np.array([subj_data['trial_num'].min(), subj_data['trial_num'].max()])
-y_vals = subj_data['abs_max_val'].iloc[0] + slope * (x_vals - subj_data['trial_num'].iloc[0])  # Rough approximation
-plt.plot(x_vals, y_vals, 'r-', linewidth=2)
-plt.xlabel('Trial Number')
-plt.ylabel('Maximum Pain Rating')
-plt.ylim(0, 100)
-plt.title(f'Example Habituator: Subject {example_subject}\nSlope = {slope:.2f}')
-plt.show()
+plt.figure(figsize=(10,6))
+for cls in ['habituator','non-responder','sensitizer']:
+    subset = plot_df[plot_df['classification'] == cls]
 
-# Example sensitizer
-example_subject = trajectory_df[trajectory_df['slope'] > 3]['subject'].iloc[0]
-subj_data = trial_metrics_df[trial_metrics_df['subject'] == example_subject].sort_values('trial_num')
-plt.figure(figsize=(8, 6))
-plt.scatter(subj_data['trial_num'], subj_data['abs_max_val'], alpha=0.7, s=60)
-subject_slope_info = trajectory_df[trajectory_df['subject'] == example_subject].iloc[0]
-slope = subject_slope_info['slope']
-r_value = subject_slope_info['r_value']
-p_value = subject_slope_info['p_value']
-# Add regression line
-x_vals = np.array([subj_data['trial_num'].min(), subj_data['trial_num'].max()])
-y_vals = subj_data['abs_max_val'].iloc[0] + slope * (x_vals - subj_data['trial_num'].iloc[0])  # Rough approximation
-plt.plot(x_vals, y_vals, 'r-', linewidth=2)
-plt.xlabel('Trial Number')
-plt.ylabel('Maximum Pain Rating')
-plt.ylim(0, 100)
-plt.title(f'Example Sensitizer: Subject {example_subject}\nSlope = {slope:.2f}')
-plt.show()
+    plt.hist(
+        subset['slope'],
+        bins=20,
+        alpha=0.6,
+        label=cls
+    )
+plt.axvline(0,color='k',linestyle='--')
+plt.title('Bootstrap Classification')
+plt.xlabel('Mean slope')
+plt.ylabel('Count')
+plt.legend()
+####################################################################################### Plot example subject for each group
+def plot_hold_trials_for_subject(subject_id, hold_metrics_df, time_series_df, title=None, time_window=None):
+    subject_hold_trials = hold_metrics_df[hold_metrics_df['subject'] == subject_id].copy()
+    if subject_hold_trials.empty:
+        print(f"No hold trials found for subject {subject_id}")
+        return
+
+    trial_nums = subject_hold_trials['trial_num'].unique()
+
+    subj_ts = time_series_df[
+        (time_series_df['subject'] == subject_id) &
+        (time_series_df['trial_num'].isin(trial_nums))
+    ].copy()
+
+    if subj_ts.empty:
+        print(f"No time series data found for subject {subject_id}")
+        return
+
+    all_times = subj_ts['aligned_time'].dropna().to_numpy()
+    time_grid = np.linspace(np.min(all_times), np.max(all_times), 400)
+
+    pain_curves = []
+
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax2 = ax1.twinx()
+
+    for trial_num, trial_df in subj_ts.groupby('trial_num'):
+        trial_df = trial_df.sort_values('aligned_time')
+
+        x = trial_df['aligned_time'].to_numpy()
+        pain = trial_df['pain'].to_numpy()
+        temp = trial_df['temperature'].to_numpy()
+
+        if len(x) < 2:
+            continue
+
+        pain_interp = np.interp(time_grid, x, pain, left=np.nan, right=np.nan)
+        pain_curves.append(pain_interp)
+
+        # Plot individual pain traces
+        ax1.plot(x, pain, color='gray', alpha=0.25, linewidth=1)
+
+        # Plot individual temperature traces
+        ax2.plot(x, temp, color='red', alpha=0.8, linewidth=1)
+
+    # Mean pain trace
+    pain_curves = np.array(pain_curves)
+    mean_pain = np.nanmean(pain_curves, axis=0)
+    ax1.plot(time_grid, mean_pain, color='black', linewidth=3, label='Mean pain')
+
+    ax1.set_xlabel('Aligned time (s)')
+    ax1.set_ylabel('Pain')
+    ax2.set_ylabel('Temperature')
+    ax1.grid(True, alpha=0.3)
+
+    if time_window is not None:
+        ax1.set_xlim(time_window)
+
+    if title is None:
+        title = f"Subject {subject_id} hold trials"
+
+    ax1.set_title(title)
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    ax1.legend(handles1, labels1, loc='best')
+
+    plt.tight_layout()
+    plt.show()
+
+
+hab_subject = slope_classification_df[
+    slope_classification_df['classification'] == 'habituator'
+]['subject'].sample(1).iloc[0]
+
+sens_subject = slope_classification_df[
+    slope_classification_df['classification'] == 'sensitizer'
+]['subject'].sample(1).iloc[0]
+
+nr_subject = slope_classification_df[
+    slope_classification_df['classification'] == 'non-responder'
+]['subject'].sample(1).iloc[0]
+
+# Plot examples
+plot_hold_trials_for_subject(hab_subject, hold_metrics_df, time_series_df, title=f"Example Habituator (Subject {hab_subject})")
+plot_hold_trials_for_subject(sens_subject, hold_metrics_df, time_series_df, title=f"Example Sensitizer (Subject {sens_subject})")
+plot_hold_trials_for_subject(nr_subject, hold_metrics_df, time_series_df, title=f"Example Non-responder (Subject {nr_subject})")
 
 # %%
 # ===================================================================
@@ -194,7 +349,7 @@ plt.show()
 
 # Filter for just habituators and sensitizers, and OA/OH trials
 context_analysis_df = trial_metrics_df[
-    (trial_metrics_df['trajectory_group'].isin(['habituator', 'sensitizer'])) &
+    (trial_metrics_df['classification'].isin(['habituator', 'sensitizer'])) &
     (trial_metrics_df['trial_type'].isin(stepped_trial_types))
 ].copy()
 
@@ -210,7 +365,7 @@ print("=== ONSET HYPERALGESIA (INV) - Preceding MAX Pain ===")
 for group in ['habituator', 'sensitizer']:
     subset = context_analysis_df[
         (context_analysis_df['trial_type'] == stepped_trial_types[1]) & # 'inv' for plosONE, 'onset' for kneeOA
-        (context_analysis_df['trajectory_group'] == group)
+        (context_analysis_df['classification'] == group)
     ]
     
     clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
@@ -228,7 +383,7 @@ print("\n=== OFFSET ANALGESIA (OFFSET) - Preceding MIN Pain ===")
 for group in ['habituator', 'sensitizer']:
     subset = context_analysis_df[
         (context_analysis_df['trial_type'] == stepped_trial_types[0]) & # 'offset' for both datasets
-        (context_analysis_df['trajectory_group'] == group)
+        (context_analysis_df['classification'] == group)
     ]
     
     clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
@@ -248,7 +403,7 @@ fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 ############## OH - Habituators (top left)
 subset = context_analysis_df[
     (context_analysis_df['trial_type'] == stepped_trial_types[1]) & 
-    (context_analysis_df['trajectory_group'] == 'habituator')
+    (context_analysis_df['classification'] == 'habituator')
 ]
 clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
 
@@ -275,7 +430,7 @@ axes[0,0].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}',
 ############## OH - Sensitizers (top right)
 subset = context_analysis_df[
     (context_analysis_df['trial_type'] == stepped_trial_types[1]) & 
-    (context_analysis_df['trajectory_group'] == 'sensitizer')
+    (context_analysis_df['classification'] == 'sensitizer')
 ]
 clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
 
@@ -302,7 +457,7 @@ axes[0,1].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}',
 ############## OA - Habituators (bottom left)
 subset = context_analysis_df[
     (context_analysis_df['trial_type'] == stepped_trial_types[0]) & 
-    (context_analysis_df['trajectory_group'] == 'habituator')
+    (context_analysis_df['classification'] == 'habituator')
 ]
 clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
 
@@ -329,7 +484,7 @@ axes[1,0].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}',
 ############### OA - Sensitizers (bottom right)
 subset = context_analysis_df[
     (context_analysis_df['trial_type'] == stepped_trial_types[0]) & 
-    (context_analysis_df['trajectory_group'] == 'sensitizer')
+    (context_analysis_df['classification'] == 'sensitizer')
 ]
 clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
 
@@ -355,7 +510,7 @@ if p_val < 0.05:
 
 plt.tight_layout()
 plt.show()
-plt.savefig(f'{FIG_PATH}preceding_min_max_effects_by_trajectory_group.svg', dpi=300, bbox_inches='tight')
+plt.savefig(f'{FIG_PATH}preceding_min_max_effects_by_classification.svg', dpi=300, bbox_inches='tight')
 
 
 #%%
@@ -363,10 +518,10 @@ plt.savefig(f'{FIG_PATH}preceding_min_max_effects_by_trajectory_group.svg', dpi=
 # Overall difference in OH/OA magnitude between HABITUATORS vs. SENSITIZERS
 # =========================================================================
 
-# Filter for OH/OA trials only and merge with trajectory classifications
+# Filter for OH/OA trials only and merge with classification
 oh_oa_data = trial_metrics_df[
     (trial_metrics_df['trial_type'].isin(stepped_trial_types)) &
-    (trial_metrics_df['trajectory_group'].isin(['habituator', 'sensitizer']))
+    (trial_metrics_df['classification'].isin(['habituator', 'sensitizer']))
 ].copy()
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 6))
@@ -374,15 +529,15 @@ fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 # OH (inv) trials
 oh_data = oh_oa_data[oh_oa_data['trial_type'] == stepped_trial_types[1]] # 'inv' for plosONE, 'onset' for kneeOA
 if len(oh_data) > 0:
-    sns.violinplot(data=oh_data, x='trajectory_group', y='abs_normalized_pain_change',
+    sns.violinplot(data=oh_data, x='classification', y='abs_normalized_pain_change',
                    palette={'habituator': 'blue', 'sensitizer': 'red'}, inner='box', ax=axes[0])
     axes[0].set_title('Onset Hyperalgesia (OH) Magnitude')
-    axes[0].set_xlabel('Trajectory Group')
+    axes[0].set_xlabel('Classification')
     axes[0].set_ylabel('OH Magnitude (%)')
     
     # Simple t-test
-    hab_oh = oh_data[oh_data['trajectory_group'] == 'habituator']['abs_normalized_pain_change'].dropna()
-    sen_oh = oh_data[oh_data['trajectory_group'] == 'sensitizer']['abs_normalized_pain_change'].dropna()
+    hab_oh = oh_data[oh_data['classification'] == 'habituator']['abs_normalized_pain_change'].dropna()
+    sen_oh = oh_data[oh_data['classification'] == 'sensitizer']['abs_normalized_pain_change'].dropna()
     
     if len(hab_oh) > 0 and len(sen_oh) > 0:
         t_stat, p_val = stats.ttest_ind(hab_oh, sen_oh)
@@ -391,15 +546,15 @@ if len(oh_data) > 0:
 # OA (offset) trials  
 oa_data = oh_oa_data[oh_oa_data['trial_type'] == stepped_trial_types[0]] # 'offset' for both datasets
 if len(oa_data) > 0:
-    sns.violinplot(data=oa_data, x='trajectory_group', y='abs_normalized_pain_change',
+    sns.violinplot(data=oa_data, x='classification', y='abs_normalized_pain_change',
                    palette={'habituator': 'blue', 'sensitizer': 'red'}, inner='box', ax=axes[1])
     axes[1].set_title('Offset Analgesia (OA) Magnitude')
-    axes[1].set_xlabel('Trajectory Group')
+    axes[1].set_xlabel('Classification')
     axes[1].set_ylabel('OA Magnitude (%)')
     
     # Simple t-test
-    hab_oa = oa_data[oa_data['trajectory_group'] == 'habituator']['abs_normalized_pain_change'].dropna()
-    sen_oa = oa_data[oa_data['trajectory_group'] == 'sensitizer']['abs_normalized_pain_change'].dropna()
+    hab_oa = oa_data[oa_data['classification'] == 'habituator']['abs_normalized_pain_change'].dropna()
+    sen_oa = oa_data[oa_data['classification'] == 'sensitizer']['abs_normalized_pain_change'].dropna()
     
     if len(hab_oa) > 0 and len(sen_oa) > 0:
         t_stat, p_val = stats.ttest_ind(hab_oa, sen_oa)
@@ -411,48 +566,13 @@ plt.show()
 
 #%%
 # ==================================================================
-# Save trajectory calculations 
+# Save classification calculations 
 # ==================================================================
 
-trajectory_output_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trajectory_classification.csv'
-trajectory_df.to_csv(trajectory_output_path, index=False)
-print(f"Saved subject trajectories to {trajectory_output_path}")
+classification_output_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/classification.csv'
+classification_df.to_csv(classification_output_path, index=False)
+print(f"Saved subject classifications to {classification_output_path}")
 
-#%%
-# ==================================================================================================================
-# I noticed some subjects have positive abs_normalized_pain_change values for hold trials and others have negative
-# Let's see if this relates to their habituator/sensitizer classification
-# ==================================================================================================================
-
-
-
-
-
-# %%
-# ================================================================================================
-# LINEAR MIXED EFFECTS ANALYSIS WITH TRAJECTORY GROUPS
-# Testing whether habituators vs. sensitizers show different patterns in OH/OA magnitude over trials
-# ================================================================================================
-import statsmodels.api as sm
-from statsmodels.formula.api import mixedlm
-import warnings
-warnings.filterwarnings("ignore")
-
-print("=" * 60)
-print("LME ANALYSIS: OH/OA MAGNITUDE OVER TRIALS BY TRAJECTORY GROUP")
-print("=" * 60)
-
-# Prepare data 
-oh_oa_data['trial_num_centered'] = oh_oa_data['trial_num'] - oh_oa_data['trial_num'].mean() # center trial num 
-
-model = mixedlm("abs_normalized_pain_change ~ trial_num_centered * trajectory_group",
-                data = oh_oa_data,
-                groups=oh_oa_data['subject'],
-                re_formula="~trial_num_centered")
-result = model.fit(reml=False) 
-print(result.summary())
-
-# %%
 
 #%%
 # =========================================================
@@ -557,7 +677,7 @@ plt.axvline(x=0, color='black', linestyle='--', linewidth=2, label='No change')
 # Add labels and formatting
 plt.xlabel('Max Pain Slope (points per trial)', fontsize=12)
 plt.ylabel('Number of Subjects', fontsize=12)
-plt.title('Distribution of Individual Pain Trajectories by Clinical Group', fontsize=14)
+plt.title('Distribution of Individual Pain Classifications by Clinical Group', fontsize=14)
 plt.legend(fontsize=11)
 plt.grid(True, alpha=0.3)
 

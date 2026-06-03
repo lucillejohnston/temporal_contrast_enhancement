@@ -1,0 +1,50 @@
+T1: 46
+Thermode_Port: /dev/tty.usbmodem1401
+VAS_Port: /dev/tty.usbmodem1101
+calibration_data_file: Annika_Test_20260603_calibration_data.csv
+num_blocks: 10
+patient_info:
+    date: '20260603'
+    name: Annika_Test
+side: left
+trial_order:
+    1: hold_T1
+    2: hold_T2
+    3: step_down
+    4: step_up
+    5: hold_T2
+    6: step_up
+    7: hold_T1
+    8: step_down
+    9: step_up
+    10: hold_T2
+    11: step_down
+    12: hold_T1
+    13: hold_T2
+    14: hold_T1
+    15: step_up
+    16: step_down
+    17: hold_T1
+    18: hold_T2
+    19: step_up
+    20: step_down
+    21: step_up
+    22: step_down
+    23: hold_T2
+    24: hold_T1
+    25: hold_T2
+    26: step_up
+    27: hold_T1
+    28: step_down
+    29: step_down
+    30: hold_T2
+    31: step_up
+    32: hold_T1
+    33: step_up
+    34: step_down
+    35: hold_T2
+    36: hold_T1
+    37: hold_T2
+    38: step_up
+    39: hold_T1
+    40: step_down
