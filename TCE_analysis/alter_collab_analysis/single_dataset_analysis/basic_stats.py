@@ -216,19 +216,19 @@ elif dataset in ['kneeOA', 'cLBP']:
 
 # Find common subjects
 common_subjects = set(offset_trials['subject']) & set(inv_trials['subject'])
-offset_data = offset_trials[offset_trials['subject'].isin(common_subjects)].groupby('subject').mean(numeric_only=True)
-inv_data = inv_trials[inv_trials['subject'].isin(common_subjects)].groupby('subject').mean(numeric_only=True)
+offset_data = offset_trials[offset_trials['subject'].isin(common_subjects)].groupby('subject').mean(numeric_only=True) # average across trials for each subject
+inv_data = inv_trials[inv_trials['subject'].isin(common_subjects)].groupby('subject').mean(numeric_only=True) # average across trials for each subject
 
 vals_offset = offset_data['abs_normalized_pain_change']
 vals_inv = inv_data['abs_normalized_pain_change']
 
-data = pd.DataFrame({'offset': vals_offset, 'onset': vals_inv}).dropna()
+data = pd.DataFrame({'offset': vals_offset.abs(), 'onset': vals_inv.abs()}).dropna()
 
 # Paired t-test
 tstat, pval = stats.ttest_rel(data['offset'], data['onset'])
 print(f"Offset vs Onset (abs_normalized_pain_change): n={len(data)} subjects, t={tstat:.3f}, p={pval:.4f}")
 
-# Plot (choose swarm or violin)
+# Plot
 plot_data = pd.melt(data.reset_index(), id_vars=['subject'], 
                    value_vars=['offset', 'onset'], 
                    var_name='Trial_Type', value_name='Normalized_Pain_Change')
@@ -242,7 +242,7 @@ for subject in data.index:
     plt.plot([0, 1], [data.loc[subject, 'offset'], data.loc[subject, 'onset']], 
             'k-', alpha=0.3, linewidth=0.8)
 
-plt.ylabel('Absolute Normalized Pain Change (%)')
+plt.ylabel('Absolute Value of Normalized Pain Change (%)')
 plt.title(f'Offset vs Onset: Normalized Pain Change\n(p={pval:.4f})')
 plt.tight_layout()
 plt.show()
@@ -264,7 +264,7 @@ plt.show()
 # if dataset != 'cLBP': #everyone else is good
 #     plot_trial_comparison()
 # else: # treat cLBP data different because of the sparse pain ratings
-
+#     plot_trial_comparison_cLBP()
 
 
 
@@ -496,492 +496,34 @@ plt.tight_layout()
 plt.show()
 
 # Compare Peak to Peak Values
-# Compare abs_peak_to_peak between offset and inv trials
+# Compare abs_peak_to_peak between offset and onset trials
 offset_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'offset'].copy()
-inv_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'inv'].copy()
+onset_trials = trial_metrics_df[trial_metrics_df['trial_type'] == 'onset'].copy()
 
-# Find common subjects
-vals_offset = offset_data['abs_peak_to_peak']
-vals_inv = inv_data['abs_peak_to_peak']
+vals_offset = offset_trials['abs_peak_to_peak']
+vals_onset = onset_trials['abs_peak_to_peak']
 
-data = pd.DataFrame({'offset': vals_offset, 'inv': vals_inv}).dropna()
+data = pd.DataFrame({'offset': vals_offset, 'onset': vals_onset}).dropna()
 
 # Paired t-test
-tstat, pval = stats.ttest_rel(data['offset'], data['inv'])
-print(f"Peak-to-Peak Comparison (Offset vs Inv): n={len(data)} subjects, t={tstat:.3f}, p={pval:.4f}")
+tstat, pval = stats.ttest_rel(data['offset'], data['onset'])
+print(f"Peak-to-Peak Comparison (Offset vs Onset): n={len(data)} subjects, t={tstat:.3f}, p={pval:.4f}")
 
 # Correlation
-r, p_corr = stats.pearsonr(data['offset'], data['inv'])
+r, p_corr = stats.pearsonr(data['offset'], data['onset'])
 print(f"Correlation: r = {r:.4f}, p = {p_corr:.4f}")
 
 # Quick scatter plot to see correlation
 plt.figure(figsize=(8, 6))
-plt.scatter(data['offset'], data['inv'], alpha=0.7, s=60, color='#4F81BD')
-plt.plot([0, data[['offset', 'inv']].max().max()], 
-         [0, data[['offset', 'inv']].max().max()], 'k--', alpha=0.5, label='y=x')
+plt.scatter(data['offset'], data['onset'], alpha=0.7, s=60, color='#4F81BD')
+plt.plot([0, data[['offset', 'onset']].max().max()], 
+         [0, data[['offset', 'onset']].max().max()], 'k--', alpha=0.5, label='y=x')
 plt.xlabel('Offset Peak-to-Peak')
-plt.ylabel('Inv Peak-to-Peak')
-plt.title(f'Peak-to-Peak Correlation: Offset vs Inv\n(r={r:.4f}, p={p_corr:.4f})')
+plt.ylabel('Onset Peak-to-Peak')
+plt.title(f'Peak-to-Peak Correlation: Offset vs Onset\n(r={r:.4f}, p={p_corr:.4f})')
 plt.legend()
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
 
-# %%
-"""
-EVERYTHING BELOW STRAIGHT FROM CLAUDE PLEASE VERIFY
-"""
-# ============================================================================
-# TRIAL ORDER EFFECTS ANALYSIS - Linear Mixed Effects Models
-# ============================================================================
-
-import statsmodels.api as sm
-from statsmodels.formula.api import mixedlm
-import warnings
-warnings.filterwarnings('ignore')
-
-print("=" * 80)
-print("TRIAL ORDER EFFECTS ANALYSIS")
-print("=" * 80)
-
-# Prepare data for LME analysis
-lme_data = trial_metrics_df.copy()
-
-# Ensure trial_num is numeric and centered (helps with interpretation)
-lme_data['trial_num_centered'] = lme_data['trial_num'] - lme_data['trial_num'].mean()
-
-# Create a combined dataset for stepped trials (offset + inv)
-control_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(control_trials)].copy()
-stepped_trials = trial_metrics_df[trial_metrics_df['trial_type'].isin(stepped_trials)].copy()
-
-print(f"Data summary:")
-print(f"- Total trials: {len(lme_data)}")
-print(f"- Stepped trials (offset + inv): {len(stepped_trials)}")
-print(f"- Control trials (t1_hold + t2_hold): {len(control_trials)}")
-print(f"- Subjects: {lme_data['subject'].nunique()}")
-print(f"- Trial range: {lme_data['trial_num'].min()} to {lme_data['trial_num'].max()}")
-
-######################################################################################### Trial order effects on primary pain metrics
-
-print("\n" + "="*60)
-print("MODEL 1: TRIAL ORDER EFFECTS ON PAIN INTENSITY")
-print("="*60)
-
-# Test different pain metrics
-pain_metrics = ['abs_max_val', 'abs_normalized_pain_change', 'auc_total']
-
-for metric in pain_metrics:
-    print(f"\n--- {metric.upper()} ---")
-    
-    # Model for stepped trials only (offset + inv)
-    if metric in stepped_trials.columns:
-        try:
-            # Full model: trial_num * trial_type + random intercept + random slope
-            model = mixedlm(f"{metric} ~ trial_num_centered * trial_type", 
-                          data=stepped_trials,
-                          groups=stepped_trials["subject"],
-                          re_formula="~trial_num_centered")
-            
-            result = model.fit(reml=False)
-            
-            print(f"Model: {metric} ~ trial_num_centered * trial_type + (1 + trial_num_centered | subject)")
-            print(f"AIC: {result.aic:.2f}")
-            
-            # Extract key results
-            params = result.params
-            pvalues = result.pvalues
-            
-            print(f"Fixed Effects:")
-            for param in ['trial_num_centered', 'trial_type[T.offset]', 
-                         'trial_num_centered:trial_type[T.offset]']:
-                if param in params.index:
-                    coef = params[param]
-                    p = pvalues[param]
-                    sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
-                    print(f"  {param}: β = {coef:.4f}, p = {p:.4f} {sig}")
-            
-            # Test for overall trial order effect (combining both trial types)
-            if 'trial_num_centered' in pvalues.index:
-                trial_effect_p = pvalues['trial_num_centered']
-                if trial_effect_p < 0.05:
-                    direction = "increases" if params['trial_num_centered'] > 0 else "decreases"
-                    print(f"  → {metric} {direction} over trials (p = {trial_effect_p:.4f})")
-            
-            # Test for interaction
-            interaction_param = 'trial_num_centered:trial_type[T.offset]'
-            if interaction_param in pvalues.index:
-                interaction_p = pvalues[interaction_param]
-                if interaction_p < 0.05:
-                    print(f"  → Different trial order effects between offset/inv (p = {interaction_p:.4f})")
-                    
-        except Exception as e:
-            print(f"Model failed for {metric}: {e}")
-
-######################################################################################### Trial order effects on latency measures
-print("\n" + "="*60)
-print("MODEL 2: TRIAL ORDER EFFECTS ON LATENCY (WITHIN TRIAL TYPE)")
-print("="*60)
-
-latency_metrics = ['abs_max_time', 'abs_min_time']
-
-for metric in latency_metrics:
-    if metric in stepped_trials.columns:
-        print(f"\n--- {metric.upper()} ---")
-        
-        # Test each trial type separately for trial order effects
-        for trial_type in ['offset', 'inv']:
-            subset = stepped_trials[stepped_trials['trial_type'] == trial_type]
-            
-            if len(subset) > 10:  # Need sufficient data
-                try:
-                    # Model: latency ~ trial_num + (1 + trial_num | subject)
-                    model = mixedlm(f"{metric} ~ trial_num_centered", 
-                                  data=subset,
-                                  groups=subset["subject"],
-                                  re_formula="~trial_num_centered")
-                    
-                    result = model.fit(reml=False)
-                    
-                    params = result.params
-                    pvalues = result.pvalues
-                    
-                    print(f"\n  {trial_type.upper()} trials (n={len(subset)} trials, {subset['subject'].nunique()} subjects):")
-                    
-                    if 'trial_num_centered' in pvalues.index:
-                        trial_effect_p = pvalues['trial_num_centered']
-                        trial_effect_coef = params['trial_num_centered']
-                        sig = "***" if trial_effect_p < 0.001 else "**" if trial_effect_p < 0.01 else "*" if trial_effect_p < 0.05 else "ns"
-                        
-                        print(f"    Trial order effect: β = {trial_effect_coef:.4f}, p = {trial_effect_p:.4f} {sig}")
-                        
-                        if trial_effect_p < 0.05:
-                            direction = "increases" if trial_effect_coef > 0 else "decreases"
-                            print(f"    → {metric} {direction} over trials in {trial_type}")
-                        else:
-                            print(f"    → No significant trial order effect in {trial_type}")
-                    
-                    # Simple correlation as backup
-                    r, p_corr = stats.pearsonr(subset['trial_num'], subset[metric])
-                    print(f"    Simple correlation: r = {r:.3f}, p = {p_corr:.4f}")
-                            
-                except Exception as e:
-                    print(f"    Model failed for {trial_type}: {e}")
-            else:
-                print(f"\n  {trial_type.upper()}: Insufficient data (n={len(subset)})")
-
-# Optional: Test if trial order effects on latency differ between trial types
-print(f"\n--- COMPARING TRIAL ORDER EFFECTS BETWEEN OFFSET AND INV ---")
-try:
-    # This tests the interaction: does trial order affect latency differently in offset vs inv?
-    model = mixedlm("abs_max_time ~ trial_num_centered * trial_type", 
-                    data=stepped_trials,
-                    groups=stepped_trials["subject"])
-    
-    result = model.fit(reml=False)
-    params = result.params
-    pvalues = result.pvalues
-    
-    interaction_param = 'trial_num_centered:trial_type[T.offset]'
-    if interaction_param in pvalues.index:
-        interaction_p = pvalues[interaction_param]
-        interaction_coef = params[interaction_param]
-        sig = "***" if interaction_p < 0.001 else "**" if interaction_p < 0.01 else "*" if interaction_p < 0.05 else "ns"
-        
-        print(f"Trial order × trial type interaction: β = {interaction_coef:.4f}, p = {interaction_p:.4f} {sig}")
-        
-        if interaction_p < 0.05:
-            print(f"→ Trial order effects on latency differ between offset and inv trials")
-        else:
-            print(f"→ Trial order effects on latency are similar between offset and inv trials")
-    
-except Exception as e:
-    print(f"Interaction model failed: {e}")
-
-######################################################################################### Compare trial order effects between stepped vs control trials
-
-print("\n" + "="*60)
-print("MODEL 3: STEPPED vs CONTROL TRIAL ORDER EFFECTS")
-print("="*60)
-
-# Create binary indicator for stepped vs control
-lme_data['is_stepped'] = lme_data['trial_type'].isin(['offset', 'inv']).astype(int)
-
-try:
-    # Model abs_max_val across all trial types
-    model = mixedlm("abs_max_val ~ trial_num_centered * is_stepped", 
-                    data=lme_data,
-                    groups=lme_data["subject"])
-    
-    result = model.fit(reml=False)
-    
-    params = result.params
-    pvalues = result.pvalues
-    
-    print("Testing if trial order effects differ between stepped and control trials:")
-    
-    interaction_param = 'trial_num_centered:is_stepped'
-    if interaction_param in pvalues.index:
-        interaction_p = pvalues[interaction_param]
-        interaction_coef = params[interaction_param]
-        sig = "***" if interaction_p < 0.001 else "**" if interaction_p < 0.01 else "*" if interaction_p < 0.05 else "ns"
-        
-        print(f"  Trial order × Trial type interaction: β = {interaction_coef:.4f}, p = {interaction_p:.4f} {sig}")
-        
-        if interaction_p < 0.05:
-            if interaction_coef > 0:
-                print(f"  → Stepped trials show GREATER trial order effects than control trials")
-            else:
-                print(f"  → Stepped trials show SMALLER trial order effects than control trials")
-        else:
-            print(f"  → No difference in trial order effects between stepped and control trials")
-    
-    # Main effects
-    if 'trial_num_centered' in pvalues.index:
-        main_p = pvalues['trial_num_centered']
-        main_coef = params['trial_num_centered']
-        if main_p < 0.05:
-            direction = "increases" if main_coef > 0 else "decreases"
-            print(f"  → Overall: pain intensity {direction} over trials (p = {main_p:.4f})")
-
-except Exception as e:
-    print(f"Model failed: {e}")
-
-# ============================================================================
-# Visualization: Trial order effects
-# ============================================================================
-
-print("\n" + "="*60)
-print("VISUALIZING TRIAL ORDER EFFECTS")
-print("="*60)
-
-# Plot 1: Pain intensity over trial number by trial type
-plt.figure(figsize=(12, 8))
-
-trial_types = ['offset', 'inv', 't1_hold', 't2_hold']
-colors = ['#C0504D', '#9BBB59', '#4F81BD', '#8064A2']
-
-for i, trial_type in enumerate(trial_types):
-    subset = lme_data[lme_data['trial_type'] == trial_type]
-    
-    if len(subset) > 0:
-        # Calculate mean and SEM for each trial number
-        trial_summary = subset.groupby('trial_num').agg({
-            'abs_max_val': ['mean', 'sem', 'count']
-        }).round(3)
-        
-        trial_summary.columns = ['mean', 'sem', 'count']
-        trial_summary = trial_summary[trial_summary['count'] >= 3]  # Only plot if ≥3 subjects
-        
-        if len(trial_summary) > 0:
-            x = trial_summary.index
-            y = trial_summary['mean']
-            yerr = trial_summary['sem']
-            
-            plt.errorbar(x, y, yerr=yerr, marker='o', linestyle='-', 
-                        color=colors[i], label=f'{trial_type} (n={subset["subject"].nunique()})',
-                        capsize=3, capthick=1, linewidth=2, markersize=6)
-
-plt.xlabel('Trial Number')
-plt.ylabel('Pain Intensity (Max Value)')
-plt.title('Pain Intensity Across Trial Order by Trial Type')
-plt.legend()
-plt.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-# Plot 2: Individual subject trajectories for stepped trials
-plt.figure(figsize=(14, 6))
-
-plt.subplot(1, 2, 1)
-# Offset trials
-offset_data = stepped_trials[stepped_trials['trial_type'] == 'offset']
-for subject in offset_data['subject'].unique()[:10]:  # Show first 10 subjects
-    subj_data = offset_data[offset_data['subject'] == subject]
-    if len(subj_data) > 1:  # Only if multiple trials
-        plt.plot(subj_data['trial_num'], subj_data['abs_max_val'], 
-                'o-', alpha=0.6, color='#C0504D', linewidth=1, markersize=4)
-
-plt.xlabel('Trial Number')
-plt.ylabel('Pain Intensity (Max Value)')
-plt.title('Individual Trajectories: Offset Trials')
-plt.grid(True, alpha=0.3)
-
-plt.subplot(1, 2, 2)
-# Inv trials
-inv_data = stepped_trials[stepped_trials['trial_type'] == 'inv']
-for subject in inv_data['subject'].unique()[:10]:  # Show first 10 subjects
-    subj_data = inv_data[inv_data['subject'] == subject]
-    if len(subj_data) > 1:  # Only if multiple trials
-        plt.plot(subj_data['trial_num'], subj_data['abs_max_val'], 
-                'o-', alpha=0.6, color='#9BBB59', linewidth=1, markersize=4)
-
-plt.xlabel('Trial Number')
-plt.ylabel('Pain Intensity (Max Value)')
-plt.title('Individual Trajectories: Inv Trials')
-plt.grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.show()
-
-# ============================================================================
-# Summary statistics by trial number
-# ============================================================================
-
-print("\n" + "="*60)
-print("SUMMARY: TRIAL ORDER PATTERNS")
-print("="*60)
-
-# Calculate correlations between trial number and pain metrics for each trial type
-for trial_type in ['offset', 'inv', 't1_hold', 't2_hold']:
-    subset = lme_data[lme_data['trial_type'] == trial_type]
-    
-    if len(subset) > 10:  # Only if sufficient data
-        # Correlation with trial number
-        r_max, p_max = stats.pearsonr(subset['trial_num'], subset['abs_max_val'])
-        
-        print(f"\n{trial_type.upper()}:")
-        print(f"  Trial num vs max pain: r = {r_max:.3f}, p = {p_max:.4f}")
-        
-        # Test for linear trend using simple regression
-        from scipy.stats import linregress
-        slope, intercept, r_val, p_val, std_err = linregress(subset['trial_num'], subset['abs_max_val'])
-        
-        if p_val < 0.05:
-            direction = "increases" if slope > 0 else "decreases"
-            print(f"  → Significant trend: pain {direction} by {abs(slope):.3f} units per trial")
-        else:
-            print(f"  → No significant linear trend")
-        
-        # Check if early vs late trials differ
-        early_trials = subset[subset['trial_num'] <= subset['trial_num'].median()]
-        late_trials = subset[subset['trial_num'] > subset['trial_num'].median()]
-        
-        if len(early_trials) > 0 and len(late_trials) > 0:
-            t_stat, p_early_late = stats.ttest_ind(early_trials['abs_max_val'], 
-                                                   late_trials['abs_max_val'])
-            if p_early_late < 0.05:
-                direction = "higher" if late_trials['abs_max_val'].mean() > early_trials['abs_max_val'].mean() else "lower"
-                print(f"  → Late trials have {direction} pain than early trials (p = {p_early_late:.4f})")
-
-# ============================================================================
-# Alternative: rmANOVA approach (for comparison)
-# ============================================================================
-
-print("\n" + "="*60)
-print("ALTERNATIVE: rmANOVA APPROACH")
-print("="*60)
-
-try:
-    from statsmodels.stats.anova import AnovaRM
-    
-    # Create trial number bins for rmANOVA (since rmANOVA needs categorical factors)
-    lme_data['trial_bin'] = pd.cut(lme_data['trial_num'], 
-                                   bins=3, 
-                                   labels=['Early', 'Middle', 'Late'])
-    
-    # Filter to subjects with data in all bins and trial types of interest
-    stepped_complete = stepped_trials.dropna(subset=['abs_max_val', 'trial_bin'])
-    
-    # Check if we have enough data for rmANOVA
-    subject_counts = stepped_complete.groupby(['subject', 'trial_type', 'trial_bin']).size().unstack(fill_value=0)
-    
-    if len(subject_counts) > 0:
-        print("rmANOVA Analysis:")
-        print("(Note: This treats trial order as categorical bins rather than continuous)")
-        
-        # Prepare data for rmANOVA - need balanced design
-        anova_data = []
-        for subject in stepped_complete['subject'].unique():
-            subj_data = stepped_complete[stepped_complete['subject'] == subject]
-            
-            # Check if subject has both trial types and multiple trial bins
-            trial_types_present = subj_data['trial_type'].unique()
-            trial_bins_present = subj_data['trial_bin'].dropna().unique()
-            
-            if len(trial_types_present) >= 2 and len(trial_bins_present) >= 2:
-                for _, row in subj_data.iterrows():
-                    if pd.notna(row['trial_bin']):
-                        anova_data.append({
-                            'subject': row['subject'],
-                            'trial_type': row['trial_type'],
-                            'trial_bin': row['trial_bin'],
-                            'abs_max_val': row['abs_max_val']
-                        })
-        
-        if len(anova_data) > 20:  # Need sufficient data
-            anova_df = pd.DataFrame(anova_data)
-            
-            try:
-                # rmANOVA: trial_bin * trial_type
-                aovrm = AnovaRM(anova_df, 'abs_max_val', 'subject', 
-                               within=['trial_bin', 'trial_type'])
-                res = aovrm.fit()
-                
-                print("\nrmANOVA Results:")
-                print(res.summary())
-                
-                # Extract key p-values
-                anova_table = res.anova_table
-                
-                if 'trial_bin' in anova_table.index:
-                    trial_p = anova_table.loc['trial_bin', 'Pr > F']
-                    print(f"\nMain effect of trial order (binned): p = {trial_p:.4f}")
-                    if trial_p < 0.05:
-                        print("  → Significant trial order effect detected!")
-                
-                if 'trial_bin:trial_type' in anova_table.index:
-                    interaction_p = anova_table.loc['trial_bin:trial_type', 'Pr > F']
-                    print(f"Trial order × trial type interaction: p = {interaction_p:.4f}")
-                    if interaction_p < 0.05:
-                        print("  → Trial order effects differ between offset and inv!")
-                
-            except Exception as e:
-                print(f"rmANOVA failed: {e}")
-        else:
-            print("Insufficient balanced data for rmANOVA")
-    
-except ImportError:
-    print("rmANOVA requires statsmodels. Install with: pip install statsmodels")
-except Exception as e:
-    print(f"rmANOVA analysis failed: {e}")
-
-# ============================================================================
-# Final Summary and Recommendations
-# ============================================================================
-
-print("\n" + "="*80)
-print("FINAL SUMMARY: TRIAL ORDER EFFECTS")
-print("="*80)
-
-print("\nKey Questions Addressed:")
-print("1. Do pain ratings change systematically across trial presentations?")
-print("2. Are trial order effects different between stepped (offset/inv) and control trials?")
-print("3. Do offset and inv trials show similar patterns of change over time?")
-print("4. Are there individual differences in trial order effects?")
-
-print("\nMethodological Notes:")
-print("- LME models are preferred over rmANOVA for this analysis because:")
-print("  * Can handle unbalanced data (different numbers of trials per subject)")
-print("  * Treats trial number as continuous (more powerful)")
-print("  * Can model both random intercepts and slopes")
-print("  * Better handles missing data")
-print("  * More flexible for complex designs")
-
-print("\n- The original paper averaged across trials within subjects, which:")
-print("  * Eliminates ability to detect trial order effects")
-print("  * May mask important habituation/sensitization patterns")
-print("  * Reduces statistical power for detecting individual differences")
-
-print("\nInterpretation Guide:")
-print("- Negative trial_num coefficient = habituation (pain decreases over trials)")
-print("- Positive trial_num coefficient = sensitization (pain increases over trials)")
-print("- Significant interaction = different trial order effects between conditions")
-print("- Random slopes variance = individual differences in trial order effects")
-
-print("\nNext Steps:")
-print("- If significant trial order effects found, consider:")
-print("  * Including trial number as covariate in main analyses")
-print("  * Investigating mechanisms (fatigue, learning, etc.)")
-print("  * Examining if effects are linear or non-linear")
-print("  * Testing if effects interact with individual difference measures")
 # %%

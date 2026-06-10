@@ -45,6 +45,7 @@ if dataset == 'kneeOA':
     stepped_trial_types = ['offset','onset']
 elif dataset == 'plosONE':
     stepped_trial_types = ['offset', 'inv']
+    
 # %% 
 # =====================================================================
 # Determine habituators vs. sensitizers 
@@ -52,6 +53,7 @@ elif dataset == 'plosONE':
 # Primary metric: slope of period C of hold trials (maybe as a whole or in sliding windows)
 def calculate_slope(trial_data, C_start=None, C_end=None):
     period_c_data = trial_data[(trial_data['aligned_time'] >= C_start) & (trial_data['aligned_time'] <= C_end)]
+    period_c_data = period_c_data.dropna(subset=['pain']) # drop rows where pain is NaN (like in cLBP data)
     x = period_c_data['aligned_time'].to_numpy()
     y = period_c_data['pain'].to_numpy()
     if len(np.unique(x)) < 2:
@@ -77,7 +79,9 @@ def calculate_auc_difference(trial_data, window_size=10, A_start=None, C_end=Non
     
     early_window = trial_data[(trial_data['aligned_time'] >= A_start) & (trial_data['aligned_time'] < A_start + window_size)]
     late_window = trial_data[(trial_data['aligned_time'] <= C_end) & (trial_data['aligned_time'] > C_end - window_size)]
-    
+    early_window = early_window.dropna(subset=['pain'])
+    late_window = late_window.dropna(subset=['pain'])
+
     if len(early_window) == 0 or len(late_window) == 0:
         return np.nan
     
@@ -211,7 +215,7 @@ def bootstrap_classification(metric_values, n_boot=10000, ci=95, random_state=No
     elif upper_bound < 0:
         classification = 'habituator'
     else:
-        classification = 'non-responder'
+        classification = 'no trend'
     print(".")
     return classification, observed_mean, lower_bound, upper_bound
 
@@ -241,9 +245,8 @@ plot_df = hold_metrics_avg_per_subject.merge(
     how='left'
 )
 plt.figure(figsize=(10,6))
-for cls in ['habituator','non-responder','sensitizer']:
+for cls in ['habituator','no trend','sensitizer']:
     subset = plot_df[plot_df['classification'] == cls]
-
     plt.hist(
         subset['slope'],
         bins=20,
@@ -251,9 +254,9 @@ for cls in ['habituator','non-responder','sensitizer']:
         label=cls
     )
 plt.axvline(0,color='k',linestyle='--')
-plt.title('Bootstrap Classification')
-plt.xlabel('Mean slope')
-plt.ylabel('Count')
+plt.title('Distribution of Subject Classifications')
+plt.xlabel('Mean (of all hold trials per subject) slope')
+plt.ylabel('Subjects')
 plt.legend()
 ####################################################################################### Plot example subject for each group
 def plot_hold_trials_for_subject(subject_id, hold_metrics_df, time_series_df, title=None, time_window=None):
@@ -306,6 +309,7 @@ def plot_hold_trials_for_subject(subject_id, hold_metrics_df, time_series_df, ti
     ax1.plot(time_grid, mean_pain, color='black', linewidth=3, label='Mean pain')
 
     ax1.set_xlabel('Aligned time (s)')
+    ax1.set_xlim(0, 60)
     ax1.set_ylabel('Pain')
     ax2.set_ylabel('Temperature')
     ax1.grid(True, alpha=0.3)
@@ -334,391 +338,392 @@ sens_subject = slope_classification_df[
 ]['subject'].sample(1).iloc[0]
 
 nr_subject = slope_classification_df[
-    slope_classification_df['classification'] == 'non-responder'
+    slope_classification_df['classification'] == 'no trend'
 ]['subject'].sample(1).iloc[0]
 
 # Plot examples
 plot_hold_trials_for_subject(hab_subject, hold_metrics_df, time_series_df, title=f"Example Habituator (Subject {hab_subject})")
 plot_hold_trials_for_subject(sens_subject, hold_metrics_df, time_series_df, title=f"Example Sensitizer (Subject {sens_subject})")
-plot_hold_trials_for_subject(nr_subject, hold_metrics_df, time_series_df, title=f"Example Non-responder (Subject {nr_subject})")
+plot_hold_trials_for_subject(nr_subject, hold_metrics_df, time_series_df, title=f"Example No Trend (Subject {nr_subject})")
 
-# %%
-# ===================================================================
-# Preceding trial context analysis for HABITUATORS vs. SENSITIZERS
-# ===================================================================
+# # %%
+# # ===================================================================
+# # Preceding trial context analysis for HABITUATORS vs. SENSITIZERS
+# # ===================================================================
 
-# Filter for just habituators and sensitizers, and OA/OH trials
-context_analysis_df = trial_metrics_df[
-    (trial_metrics_df['classification'].isin(['habituator', 'sensitizer'])) &
-    (trial_metrics_df['trial_type'].isin(stepped_trial_types))
-].copy()
+# # Filter for just habituators and sensitizers, and OA/OH trials
+# context_analysis_df = trial_metrics_df[
+#     (trial_metrics_df['classification'].isin(['habituator', 'sensitizer'])) &
+#     (trial_metrics_df['trial_type'].isin(stepped_trial_types))
+# ].copy()
 
-# Add both preceding max and min pain
-context_analysis_df['preceding_abs_max_val'] = context_analysis_df.groupby('subject')['abs_max_val'].shift(1)
-context_analysis_df['preceding_abs_min_val'] = context_analysis_df.groupby('subject')['abs_min_val'].shift(1)
+# # Add both preceding max and min pain
+# context_analysis_df['preceding_abs_max_val'] = context_analysis_df.groupby('subject')['abs_max_val'].shift(1)
+# context_analysis_df['preceding_abs_min_val'] = context_analysis_df.groupby('subject')['abs_min_val'].shift(1)
 
-# Test the correct relationships:
-# OH (inv): preceding_abs_max_val → abs_normalized_pain_change
-# OA (offset): preceding_abs_min_val → abs_normalized_pain_change
+# # Test the correct relationships:
+# # OH (inv): preceding_abs_max_val → abs_normalized_pain_change
+# # OA (offset): preceding_abs_min_val → abs_normalized_pain_change
 
-print("=== ONSET HYPERALGESIA (INV) - Preceding MAX Pain ===")
-for group in ['habituator', 'sensitizer']:
-    subset = context_analysis_df[
-        (context_analysis_df['trial_type'] == stepped_trial_types[1]) & # 'inv' for plosONE, 'onset' for kneeOA
-        (context_analysis_df['classification'] == group)
-    ]
+# print("=== ONSET HYPERALGESIA (INV) - Preceding MAX Pain ===")
+# for group in ['habituator', 'sensitizer']:
+#     subset = context_analysis_df[
+#         (context_analysis_df['trial_type'] == stepped_trial_types[1]) & # 'inv' for plosONE, 'onset' for kneeOA
+#         (context_analysis_df['classification'] == group)
+#     ]
     
-    clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
+#     clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
     
-    if len(clean_subset) >= 5:
-        corr, p_val = stats.pearsonr(
-            clean_subset['preceding_abs_max_val'], 
-            clean_subset['abs_normalized_pain_change']
-        )
-        print(f"{group.capitalize()}s: r={corr:.3f}, p={p_val:.3f} (n={len(clean_subset)})")
-    else:
-        print(f"{group.capitalize()}s: insufficient data (n={len(clean_subset)})")
+#     if len(clean_subset) >= 5:
+#         corr, p_val = stats.pearsonr(
+#             clean_subset['preceding_abs_max_val'], 
+#             clean_subset['abs_normalized_pain_change']
+#         )
+#         print(f"{group.capitalize()}s: r={corr:.3f}, p={p_val:.3f} (n={len(clean_subset)})")
+#     else:
+#         print(f"{group.capitalize()}s: insufficient data (n={len(clean_subset)})")
 
-print("\n=== OFFSET ANALGESIA (OFFSET) - Preceding MIN Pain ===")
-for group in ['habituator', 'sensitizer']:
-    subset = context_analysis_df[
-        (context_analysis_df['trial_type'] == stepped_trial_types[0]) & # 'offset' for both datasets
-        (context_analysis_df['classification'] == group)
-    ]
+# print("\n=== OFFSET ANALGESIA (OFFSET) - Preceding MIN Pain ===")
+# for group in ['habituator', 'sensitizer']:
+#     subset = context_analysis_df[
+#         (context_analysis_df['trial_type'] == stepped_trial_types[0]) & # 'offset' for both datasets
+#         (context_analysis_df['classification'] == group)
+#     ]
     
-    clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
+#     clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
     
-    if len(clean_subset) >= 5:
-        corr, p_val = stats.pearsonr(
-            clean_subset['preceding_abs_min_val'], 
-            clean_subset['abs_normalized_pain_change']
-        )
-        print(f"{group.capitalize()}s: r={corr:.3f}, p={p_val:.3f} (n={len(clean_subset)})")
-    else:
-        print(f"{group.capitalize()}s: insufficient data (n={len(clean_subset)})")
+#     if len(clean_subset) >= 5:
+#         corr, p_val = stats.pearsonr(
+#             clean_subset['preceding_abs_min_val'], 
+#             clean_subset['abs_normalized_pain_change']
+#         )
+#         print(f"{group.capitalize()}s: r={corr:.3f}, p={p_val:.3f} (n={len(clean_subset)})")
+#     else:
+#         print(f"{group.capitalize()}s: insufficient data (n={len(clean_subset)})")
 
-############################################################################ Create a 2x2 subplot figure
-fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+# ############################################################################ Create a 2x2 subplot figure
+# fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-############## OH - Habituators (top left)
-subset = context_analysis_df[
-    (context_analysis_df['trial_type'] == stepped_trial_types[1]) & 
-    (context_analysis_df['classification'] == 'habituator')
-]
-clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
+# ############## OH - Habituators (top left)
+# subset = context_analysis_df[
+#     (context_analysis_df['trial_type'] == stepped_trial_types[1]) & 
+#     (context_analysis_df['classification'] == 'habituator')
+# ]
+# clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
 
-axes[0,0].scatter(clean_subset['preceding_abs_max_val'], clean_subset['abs_normalized_pain_change'], 
-                  alpha=0.6, color='blue', s=50)
-axes[0,0].set_xlabel('Preceding Max Pain')
-axes[0,0].set_ylabel('OH Magnitude (%)')
-axes[0,0].set_title('Onset Hyperalgesia - Habituators')
+# axes[0,0].scatter(clean_subset['preceding_abs_max_val'], clean_subset['abs_normalized_pain_change'], 
+#                   alpha=0.6, color='blue', s=50)
+# axes[0,0].set_xlabel('Preceding Max Pain')
+# axes[0,0].set_ylabel('OH Magnitude (%)')
+# axes[0,0].set_title('Onset Hyperalgesia - Habituators')
 
-corr, p_val = stats.pearsonr(clean_subset['preceding_abs_max_val'], clean_subset['abs_normalized_pain_change'])
-if p_val < 0.00125: # Bonferroni correction for 4 comparisons
-    # Add trendline
-    x = clean_subset['preceding_abs_max_val']
-    y = clean_subset['abs_normalized_pain_change']
-    z = np.polyfit(x, y, 1)
-    p = np.poly1d(z)
-    axes[0,0].plot(x, p(x), "r-", alpha=0.8, linewidth=2)
+# corr, p_val = stats.pearsonr(clean_subset['preceding_abs_max_val'], clean_subset['abs_normalized_pain_change'])
+# if p_val < 0.00125: # Bonferroni correction for 4 comparisons
+#     # Add trendline
+#     x = clean_subset['preceding_abs_max_val']
+#     y = clean_subset['abs_normalized_pain_change']
+#     z = np.polyfit(x, y, 1)
+#     p = np.poly1d(z)
+#     axes[0,0].plot(x, p(x), "r-", alpha=0.8, linewidth=2)
     
-# Add stats box
-axes[0,0].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}', 
-                transform=axes[0,0].transAxes, verticalalignment='top',
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8))
+# # Add stats box
+# axes[0,0].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}', 
+#                 transform=axes[0,0].transAxes, verticalalignment='top',
+#                 bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8))
 
-############## OH - Sensitizers (top right)
-subset = context_analysis_df[
-    (context_analysis_df['trial_type'] == stepped_trial_types[1]) & 
-    (context_analysis_df['classification'] == 'sensitizer')
-]
-clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
+# ############## OH - Sensitizers (top right)
+# subset = context_analysis_df[
+#     (context_analysis_df['trial_type'] == stepped_trial_types[1]) & 
+#     (context_analysis_df['classification'] == 'sensitizer')
+# ]
+# clean_subset = subset.dropna(subset=['preceding_abs_max_val', 'abs_normalized_pain_change'])
 
-axes[0,1].scatter(clean_subset['preceding_abs_max_val'], clean_subset['abs_normalized_pain_change'], 
-                  alpha=0.6, color='red', s=50)
-axes[0,1].set_xlabel('Preceding Max Pain')
-axes[0,1].set_ylabel('OH Magnitude (%)')
-axes[0,1].set_title('Onset Hyperalgesia - Sensitizers')
+# axes[0,1].scatter(clean_subset['preceding_abs_max_val'], clean_subset['abs_normalized_pain_change'], 
+#                   alpha=0.6, color='red', s=50)
+# axes[0,1].set_xlabel('Preceding Max Pain')
+# axes[0,1].set_ylabel('OH Magnitude (%)')
+# axes[0,1].set_title('Onset Hyperalgesia - Sensitizers')
 
-corr, p_val = stats.pearsonr(clean_subset['preceding_abs_max_val'], clean_subset['abs_normalized_pain_change'])
-if p_val < 0.00125: # Bonferroni correction for 4 comparisons
-    # Add trendline
-    x = clean_subset['preceding_abs_max_val']
-    y = clean_subset['abs_normalized_pain_change']
-    z = np.polyfit(x, y, 1)
-    p = np.poly1d(z)
-    axes[0,1].plot(x, p(x), "r-", alpha=0.8, linewidth=2)
+# corr, p_val = stats.pearsonr(clean_subset['preceding_abs_max_val'], clean_subset['abs_normalized_pain_change'])
+# if p_val < 0.00125: # Bonferroni correction for 4 comparisons
+#     # Add trendline
+#     x = clean_subset['preceding_abs_max_val']
+#     y = clean_subset['abs_normalized_pain_change']
+#     z = np.polyfit(x, y, 1)
+#     p = np.poly1d(z)
+#     axes[0,1].plot(x, p(x), "r-", alpha=0.8, linewidth=2)
     
-# Add stats box
-axes[0,1].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}', 
-                transform=axes[0,1].transAxes, verticalalignment='top',
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8))
+# # Add stats box
+# axes[0,1].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}', 
+#                 transform=axes[0,1].transAxes, verticalalignment='top',
+#                 bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8))
 
-############## OA - Habituators (bottom left)
-subset = context_analysis_df[
-    (context_analysis_df['trial_type'] == stepped_trial_types[0]) & 
-    (context_analysis_df['classification'] == 'habituator')
-]
-clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
+# ############## OA - Habituators (bottom left)
+# subset = context_analysis_df[
+#     (context_analysis_df['trial_type'] == stepped_trial_types[0]) & 
+#     (context_analysis_df['classification'] == 'habituator')
+# ]
+# clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
 
-axes[1,0].scatter(clean_subset['preceding_abs_min_val'], clean_subset['abs_normalized_pain_change'], 
-                  alpha=0.6, color='blue', s=50)
-axes[1,0].set_xlabel('Preceding Min Pain')
-axes[1,0].set_ylabel('OA Magnitude (%)')
-axes[1,0].set_title('Offset Analgesia - Habituators')
+# axes[1,0].scatter(clean_subset['preceding_abs_min_val'], clean_subset['abs_normalized_pain_change'], 
+#                   alpha=0.6, color='blue', s=50)
+# axes[1,0].set_xlabel('Preceding Min Pain')
+# axes[1,0].set_ylabel('OA Magnitude (%)')
+# axes[1,0].set_title('Offset Analgesia - Habituators')
 
-corr, p_val = stats.pearsonr(clean_subset['preceding_abs_min_val'], clean_subset['abs_normalized_pain_change'])
-if p_val < 0.05:
-    # Add trendline
-    x = clean_subset['preceding_abs_min_val']
-    y = clean_subset['abs_normalized_pain_change']
-    z = np.polyfit(x, y, 1)
-    p = np.poly1d(z)
-    axes[1,0].plot(x, p(x), "r-", alpha=0.8, linewidth=2)
+# corr, p_val = stats.pearsonr(clean_subset['preceding_abs_min_val'], clean_subset['abs_normalized_pain_change'])
+# if p_val < 0.05:
+#     # Add trendline
+#     x = clean_subset['preceding_abs_min_val']
+#     y = clean_subset['abs_normalized_pain_change']
+#     z = np.polyfit(x, y, 1)
+#     p = np.poly1d(z)
+#     axes[1,0].plot(x, p(x), "r-", alpha=0.8, linewidth=2)
 
-# Add stats box (even if not significant, for comparison)
-axes[1,0].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}', 
-               transform=axes[1,0].transAxes, verticalalignment='top',
-               bbox=dict(boxstyle="round", facecolor="lightgray" if p_val >= 0.05 else "wheat", alpha=0.8))
+# # Add stats box (even if not significant, for comparison)
+# axes[1,0].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}', 
+#                transform=axes[1,0].transAxes, verticalalignment='top',
+#                bbox=dict(boxstyle="round", facecolor="lightgray" if p_val >= 0.05 else "wheat", alpha=0.8))
 
-############### OA - Sensitizers (bottom right)
-subset = context_analysis_df[
-    (context_analysis_df['trial_type'] == stepped_trial_types[0]) & 
-    (context_analysis_df['classification'] == 'sensitizer')
-]
-clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
+# ############### OA - Sensitizers (bottom right)
+# subset = context_analysis_df[
+#     (context_analysis_df['trial_type'] == stepped_trial_types[0]) & 
+#     (context_analysis_df['classification'] == 'sensitizer')
+# ]
+# clean_subset = subset.dropna(subset=['preceding_abs_min_val', 'abs_normalized_pain_change'])
 
-axes[1,1].scatter(clean_subset['preceding_abs_min_val'], clean_subset['abs_normalized_pain_change'], 
-                  alpha=0.6, color='red', s=50)
-axes[1,1].set_xlabel('Preceding Min Pain')
-axes[1,1].set_ylabel('OA Magnitude (%)')
-axes[1,1].set_title('Offset Analgesia - Sensitizers')
+# axes[1,1].scatter(clean_subset['preceding_abs_min_val'], clean_subset['abs_normalized_pain_change'], 
+#                   alpha=0.6, color='red', s=50)
+# axes[1,1].set_xlabel('Preceding Min Pain')
+# axes[1,1].set_ylabel('OA Magnitude (%)')
+# axes[1,1].set_title('Offset Analgesia - Sensitizers')
 
-corr, p_val = stats.pearsonr(clean_subset['preceding_abs_min_val'], clean_subset['abs_normalized_pain_change'])
-if p_val < 0.05:
-    # Add trendline
-    x = clean_subset['preceding_abs_min_val']
-    y = clean_subset['abs_normalized_pain_change']
-    z = np.polyfit(x, y, 1)
-    p = np.poly1d(z)
-    axes[1,1].plot(x, p(x), "r-", alpha=0.8, linewidth=2)
+# corr, p_val = stats.pearsonr(clean_subset['preceding_abs_min_val'], clean_subset['abs_normalized_pain_change'])
+# if p_val < 0.05:
+#     # Add trendline
+#     x = clean_subset['preceding_abs_min_val']
+#     y = clean_subset['abs_normalized_pain_change']
+#     z = np.polyfit(x, y, 1)
+#     p = np.poly1d(z)
+#     axes[1,1].plot(x, p(x), "r-", alpha=0.8, linewidth=2)
     
-    # Add stats box
-    axes[1,1].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}', 
-                   transform=axes[1,1].transAxes, verticalalignment='top',
-                   bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8))
+#     # Add stats box
+#     axes[1,1].text(0.05, 0.95, f'r = {corr:.3f}\np = {p_val:.3f}', 
+#                    transform=axes[1,1].transAxes, verticalalignment='top',
+#                    bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8))
 
-plt.tight_layout()
-plt.show()
-plt.savefig(f'{FIG_PATH}preceding_min_max_effects_by_classification.svg', dpi=300, bbox_inches='tight')
+# plt.tight_layout()
+# plt.show()
+# plt.savefig(f'{FIG_PATH}preceding_min_max_effects_by_classification.svg', dpi=300, bbox_inches='tight')
 
 
-#%%
-# =========================================================================
-# Overall difference in OH/OA magnitude between HABITUATORS vs. SENSITIZERS
-# =========================================================================
+# #%%
+# # =========================================================================
+# # Overall difference in OH/OA magnitude between HABITUATORS vs. SENSITIZERS
+# # =========================================================================
 
-# Filter for OH/OA trials only and merge with classification
-oh_oa_data = trial_metrics_df[
-    (trial_metrics_df['trial_type'].isin(stepped_trial_types)) &
-    (trial_metrics_df['classification'].isin(['habituator', 'sensitizer']))
-].copy()
+# # Filter for OH/OA trials only and merge with classification
+# oh_oa_data = trial_metrics_df[
+#     (trial_metrics_df['trial_type'].isin(stepped_trial_types)) &
+#     (trial_metrics_df['classification'].isin(['habituator', 'sensitizer']))
+# ].copy()
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+# fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
-# OH (inv) trials
-oh_data = oh_oa_data[oh_oa_data['trial_type'] == stepped_trial_types[1]] # 'inv' for plosONE, 'onset' for kneeOA
-if len(oh_data) > 0:
-    sns.violinplot(data=oh_data, x='classification', y='abs_normalized_pain_change',
-                   palette={'habituator': 'blue', 'sensitizer': 'red'}, inner='box', ax=axes[0])
-    axes[0].set_title('Onset Hyperalgesia (OH) Magnitude')
-    axes[0].set_xlabel('Classification')
-    axes[0].set_ylabel('OH Magnitude (%)')
+# # OH (inv) trials
+# oh_data = oh_oa_data[oh_oa_data['trial_type'] == stepped_trial_types[1]] # 'inv' for plosONE, 'onset' for kneeOA
+# if len(oh_data) > 0:
+#     sns.violinplot(data=oh_data, x='classification', y='abs_normalized_pain_change',
+#                    palette={'habituator': 'blue', 'sensitizer': 'red'}, inner='box', ax=axes[0])
+#     axes[0].set_title('Onset Hyperalgesia (OH) Magnitude')
+#     axes[0].set_xlabel('Classification')
+#     axes[0].set_ylabel('OH Magnitude (%)')
     
-    # Simple t-test
-    hab_oh = oh_data[oh_data['classification'] == 'habituator']['abs_normalized_pain_change'].dropna()
-    sen_oh = oh_data[oh_data['classification'] == 'sensitizer']['abs_normalized_pain_change'].dropna()
+#     # Simple t-test
+#     hab_oh = oh_data[oh_data['classification'] == 'habituator']['abs_normalized_pain_change'].dropna()
+#     sen_oh = oh_data[oh_data['classification'] == 'sensitizer']['abs_normalized_pain_change'].dropna()
     
-    if len(hab_oh) > 0 and len(sen_oh) > 0:
-        t_stat, p_val = stats.ttest_ind(hab_oh, sen_oh)
-        print(f"OH: Habituators mean={hab_oh.mean():.2f}, Sensitizers mean={sen_oh.mean():.2f}, p={p_val:.3f}")
+#     if len(hab_oh) > 0 and len(sen_oh) > 0:
+#         t_stat, p_val = stats.ttest_ind(hab_oh, sen_oh)
+#         print(f"OH: Habituators mean={hab_oh.mean():.2f}, Sensitizers mean={sen_oh.mean():.2f}, p={p_val:.3f}")
 
-# OA (offset) trials  
-oa_data = oh_oa_data[oh_oa_data['trial_type'] == stepped_trial_types[0]] # 'offset' for both datasets
-if len(oa_data) > 0:
-    sns.violinplot(data=oa_data, x='classification', y='abs_normalized_pain_change',
-                   palette={'habituator': 'blue', 'sensitizer': 'red'}, inner='box', ax=axes[1])
-    axes[1].set_title('Offset Analgesia (OA) Magnitude')
-    axes[1].set_xlabel('Classification')
-    axes[1].set_ylabel('OA Magnitude (%)')
+# # OA (offset) trials  
+# oa_data = oh_oa_data[oh_oa_data['trial_type'] == stepped_trial_types[0]] # 'offset' for both datasets
+# if len(oa_data) > 0:
+#     sns.violinplot(data=oa_data, x='classification', y='abs_normalized_pain_change',
+#                    palette={'habituator': 'blue', 'sensitizer': 'red'}, inner='box', ax=axes[1])
+#     axes[1].set_title('Offset Analgesia (OA) Magnitude')
+#     axes[1].set_xlabel('Classification')
+#     axes[1].set_ylabel('OA Magnitude (%)')
     
-    # Simple t-test
-    hab_oa = oa_data[oa_data['classification'] == 'habituator']['abs_normalized_pain_change'].dropna()
-    sen_oa = oa_data[oa_data['classification'] == 'sensitizer']['abs_normalized_pain_change'].dropna()
+#     # Simple t-test
+#     hab_oa = oa_data[oa_data['classification'] == 'habituator']['abs_normalized_pain_change'].dropna()
+#     sen_oa = oa_data[oa_data['classification'] == 'sensitizer']['abs_normalized_pain_change'].dropna()
     
-    if len(hab_oa) > 0 and len(sen_oa) > 0:
-        t_stat, p_val = stats.ttest_ind(hab_oa, sen_oa)
-        print(f"OA: Habituators mean={hab_oa.mean():.2f}, Sensitizers mean={sen_oa.mean():.2f}, p={p_val:.3f}")
+#     if len(hab_oa) > 0 and len(sen_oa) > 0:
+#         t_stat, p_val = stats.ttest_ind(hab_oa, sen_oa)
+#         print(f"OA: Habituators mean={hab_oa.mean():.2f}, Sensitizers mean={sen_oa.mean():.2f}, p={p_val:.3f}")
 
-plt.tight_layout()
-plt.show()
-
-
-#%%
-# ==================================================================
-# Save classification calculations 
-# ==================================================================
-
-classification_output_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/classification.csv'
-classification_df.to_csv(classification_output_path, index=False)
-print(f"Saved subject classifications to {classification_output_path}")
+# plt.tight_layout()
+# plt.show()
 
 
-#%%
-# =========================================================
-# GET GROUP INFO DIRECTLY FROM SQL DATABASE
-# =========================================================
+# #%%
+# # ==================================================================
+# # Save classification calculations 
+# # ==================================================================
 
-import sqlite3
+# classification_output_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/classification.csv'
+# classification_df.to_csv(classification_output_path, index=False)
+# print(f"Saved subject classifications to {classification_output_path}")
 
-sql_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/combined_data.sqlite'
 
-print(f"=== QUERYING SQL DATABASE FOR GROUP INFO ===")
+# #%%
+# # =========================================================
+# # GET GROUP INFO DIRECTLY FROM SQL DATABASE
+# # =========================================================
 
-try:
-    conn = sqlite3.connect(sql_path)
+# import sqlite3
+
+# sql_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/combined_data.sqlite'
+
+# print(f"=== QUERYING SQL DATABASE FOR GROUP INFO ===")
+
+# try:
+#     conn = sqlite3.connect(sql_path)
     
-    # Simple query to get unique subject-group mappings
-    query = '''
-    SELECT DISTINCT 
-        subject,
-        COALESCE(NULLIF("group", ""), 'control') AS group_label
-    FROM metadata 
-    WHERE study = ?
-    ORDER BY subject
-    '''
+#     # Simple query to get unique subject-group mappings
+#     query = '''
+#     SELECT DISTINCT 
+#         subject,
+#         COALESCE(NULLIF("group", ""), 'control') AS group_label
+#     FROM metadata 
+#     WHERE study = ?
+#     ORDER BY subject
+#     '''
     
-    subject_groups_df = pd.read_sql_query(query, conn, params=(dataset,))
-    conn.close()
+#     subject_groups_df = pd.read_sql_query(query, conn, params=(dataset,))
+#     conn.close()
     
-    print(f"✅ Retrieved group info for {len(subject_groups_df)} subjects")
-    print(f"Group distribution:")
-    print(subject_groups_df['group_label'].value_counts())
+#     print(f"✅ Retrieved group info for {len(subject_groups_df)} subjects")
+#     print(f"Group distribution:")
+#     print(subject_groups_df['group_label'].value_counts())
     
-    # Show first few rows
-    print(f"\nFirst 10 subjects:")
-    print(subject_groups_df.head(10))
+#     # Show first few rows
+#     print(f"\nFirst 10 subjects:")
+#     print(subject_groups_df.head(10))
     
-    # Merge with trial_metrics_df
-    print(f"\nMerging with trial_metrics_df...")
-    print(f"Before merge: trial_metrics_df shape = {trial_metrics_df.shape}")
+#     # Merge with trial_metrics_df
+#     print(f"\nMerging with trial_metrics_df...")
+#     print(f"Before merge: trial_metrics_df shape = {trial_metrics_df.shape}")
     
-    trial_metrics_df = trial_metrics_df.merge(
-        subject_groups_df, 
-        on='subject', 
-        how='left'
-    )
+#     trial_metrics_df = trial_metrics_df.merge(
+#         subject_groups_df, 
+#         on='subject', 
+#         how='left'
+#     )
     
-    print(f"After merge: trial_metrics_df shape = {trial_metrics_df.shape}")
+#     print(f"After merge: trial_metrics_df shape = {trial_metrics_df.shape}")
     
-    # Check for missing group labels
-    missing_groups = trial_metrics_df['group_label'].isna().sum()
-    if missing_groups > 0:
-        print(f"⚠️ {missing_groups} trials missing group labels")
-        missing_subjects = trial_metrics_df[trial_metrics_df['group_label'].isna()]['subject'].unique()
-        print(f"Subjects missing group labels: {missing_subjects}")
-    else:
-        print(f"✅ All subjects have group labels!")
+#     # Check for missing group labels
+#     missing_groups = trial_metrics_df['group_label'].isna().sum()
+#     if missing_groups > 0:
+#         print(f" {missing_groups} trials missing group labels")
+#         missing_subjects = trial_metrics_df[trial_metrics_df['group_label'].isna()]['subject'].unique()
+#         print(f"Subjects missing group labels: {missing_subjects}")
+#     else:
+#         print(f" All subjects have group labels!")
     
-    print(f"\n🎉 SUCCESS! Final group distribution in trial_metrics_df:")
-    print(trial_metrics_df['group_label'].value_counts())
+#     print(f"\n SUCCESS! Final group distribution in trial_metrics_df:")
+#     print(trial_metrics_df['group_label'].value_counts())
     
-except Exception as e:
-    print(f"❌ Error querying database: {e}")
-#%%
-# =========================================================
-# PLOT SLOPE DISTRIBUTION WITH CLINICAL GROUPS OVERLAID
-# =========================================================
+# except Exception as e:
+#     print(f" Error querying database: {e}")
+# #%%
+# # =========================================================
+# # PLOT SLOPE DISTRIBUTION WITH CLINICAL GROUPS OVERLAID
+# # =========================================================
 
-# Make sure we have the slopes_df with group_label
-# Merge group_label into slopes_df if not already there
-if 'group_label' not in slopes_df.columns:
-    slopes_df = slopes_df.merge(
-        trial_metrics_df[['subject', 'group_label']].drop_duplicates(), 
-        on='subject', 
-        how='left'
-    )
+# # Make sure we have the slopes_df with group_label
+# # Merge group_label into slopes_df if not already there
+# if 'group_label' not in slopes_df.columns:
+#     slopes_df = slopes_df.merge(
+#         trial_metrics_df[['subject', 'group_label']].drop_duplicates(), 
+#         on='subject', 
+#         how='left'
+#     )
 
-print("=== SLOPE DISTRIBUTION BY CLINICAL GROUP ===")
-print("Slopes per group:")
-print(slopes_df['group_label'].value_counts())
+# print("=== SLOPE DISTRIBUTION BY CLINICAL GROUP ===")
+# print("Slopes per group:")
+# print(slopes_df['group_label'].value_counts())
 
-# Create the plot
-plt.figure(figsize=(12, 8))
+# # Create the plot
+# plt.figure(figsize=(12, 8))
 
-# Define colors for each group
-group_colors = {
-    'control': 'blue',
-    'low_pain': 'green', 
-    'high_pain': 'red'
-}
+# # Define colors for each group
+# group_colors = {
+#     'control': 'blue',
+#     'low_pain': 'green', 
+#     'high_pain': 'red'
+# }
 
-# Plot histogram for each group
-for group in slopes_df['group_label'].unique():
-    group_data = slopes_df[slopes_df['group_label'] == group]['slope']
-    plt.hist(group_data, bins=15, alpha=0.6, 
-             color=group_colors.get(group, 'gray'), 
-             label=f'{group} (n={len(group_data)})',
-             edgecolor='black', linewidth=0.5)
+# # Plot histogram for each group
+# for group in slopes_df['group_label'].unique():
+#     group_data = slopes_df[slopes_df['group_label'] == group]['slope']
+#     plt.hist(group_data, bins=15, alpha=0.6, 
+#              color=group_colors.get(group, 'gray'), 
+#              label=f'{group} (n={len(group_data)})',
+#              edgecolor='black', linewidth=0.5)
 
-# Add reference line at zero
-plt.axvline(x=0, color='black', linestyle='--', linewidth=2, label='No change')
+# # Add reference line at zero
+# plt.axvline(x=0, color='black', linestyle='--', linewidth=2, label='No change')
 
-# Add labels and formatting
-plt.xlabel('Max Pain Slope (points per trial)', fontsize=12)
-plt.ylabel('Number of Subjects', fontsize=12)
-plt.title('Distribution of Individual Pain Classifications by Clinical Group', fontsize=14)
-plt.legend(fontsize=11)
-plt.grid(True, alpha=0.3)
+# # Add labels and formatting
+# plt.xlabel('Max Pain Slope (points per trial)', fontsize=12)
+# plt.ylabel('Number of Subjects', fontsize=12)
+# plt.title('Distribution of Individual Pain Classifications by Clinical Group', fontsize=14)
+# plt.legend(fontsize=11)
+# plt.grid(True, alpha=0.3)
 
-# Add some statistics text
-stats_text = []
-for group in sorted(slopes_df['group_label'].unique()):
-    group_data = slopes_df[slopes_df['group_label'] == group]['slope']
-    mean_slope = group_data.mean()
-    std_slope = group_data.std()
-    stats_text.append(f'{group}: μ={mean_slope:.2f}, σ={std_slope:.2f}')
+# # Add some statistics text
+# stats_text = []
+# for group in sorted(slopes_df['group_label'].unique()):
+#     group_data = slopes_df[slopes_df['group_label'] == group]['slope']
+#     mean_slope = group_data.mean()
+#     std_slope = group_data.std()
+#     stats_text.append(f'{group}: μ={mean_slope:.2f}, σ={std_slope:.2f}')
 
-plt.text(0.02, 0.98, '\n'.join(stats_text), 
-         transform=plt.gca().transAxes, 
-         verticalalignment='top',
-         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-         fontsize=10)
+# plt.text(0.02, 0.98, '\n'.join(stats_text), 
+#          transform=plt.gca().transAxes, 
+#          verticalalignment='top',
+#          bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+#          fontsize=10)
 
-plt.tight_layout()
-plt.savefig(f'{FIG_PATH}slope_distribution_by_clinical_group.png', dpi=300, bbox_inches='tight')
-plt.show()
+# plt.tight_layout()
+# plt.savefig(f'{FIG_PATH}slope_distribution_by_clinical_group.png', dpi=300, bbox_inches='tight')
+# plt.show()
 
-# Print detailed statistics
-print("\n=== DETAILED STATISTICS BY GROUP ===")
-for group in sorted(slopes_df['group_label'].unique()):
-    group_data = slopes_df[slopes_df['group_label'] == group]['slope']
-    print(f"\n{group.upper()}:")
-    print(f"  N subjects: {len(group_data)}")
-    print(f"  Mean slope: {group_data.mean():.3f}")
-    print(f"  Std slope: {group_data.std():.3f}")
-    print(f"  Sensitizers (slope > 0): {(group_data > 0).sum()} ({(group_data > 0).mean()*100:.1f}%)")
-    print(f"  Habituators (slope < 0): {(group_data < 0).sum()} ({(group_data < 0).mean()*100:.1f}%)")
+# # Print detailed statistics
+# print("\n=== DETAILED STATISTICS BY GROUP ===")
+# for group in sorted(slopes_df['group_label'].unique()):
+#     group_data = slopes_df[slopes_df['group_label'] == group]['slope']
+#     print(f"\n{group.upper()}:")
+#     print(f"  N subjects: {len(group_data)}")
+#     print(f"  Mean slope: {group_data.mean():.3f}")
+#     print(f"  Std slope: {group_data.std():.3f}")
+#     print(f"  Sensitizers (slope > 0): {(group_data > 0).sum()} ({(group_data > 0).mean()*100:.1f}%)")
+#     print(f"  Habituators (slope < 0): {(group_data < 0).sum()} ({(group_data < 0).mean()*100:.1f}%)")
 
-# Statistical comparison between groups
-from scipy import stats
+# # Statistical comparison between groups
+# from scipy import stats
 
-print(f"\n=== STATISTICAL COMPARISONS ===")
-groups = sorted(slopes_df['group_label'].unique())
-for i, group1 in enumerate(groups):
-    for group2 in groups[i+1:]:
-        data1 = slopes_df[slopes_df['group_label'] == group1]['slope']
-        data2 = slopes_df[slopes_df['group_label'] == group2]['slope']
+# print(f"\n=== STATISTICAL COMPARISONS ===")
+# groups = sorted(slopes_df['group_label'].unique())
+# for i, group1 in enumerate(groups):
+#     for group2 in groups[i+1:]:
+#         data1 = slopes_df[slopes_df['group_label'] == group1]['slope']
+#         data2 = slopes_df[slopes_df['group_label'] == group2]['slope']
         
-        t_stat, p_val = stats.ttest_ind(data1, data2)
-        print(f"{group1} vs {group2}: t={t_stat:.3f}, p={p_val:.3f}")
+#         t_stat, p_val = stats.ttest_ind(data1, data2)
+#         print(f"{group1} vs {group2}: t={t_stat:.3f}, p={p_val:.3f}")
+# %%

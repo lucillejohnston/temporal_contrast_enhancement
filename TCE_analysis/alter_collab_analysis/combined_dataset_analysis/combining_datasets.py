@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 print("=== LOADING AND COMBINING DATASETS ===")
 
-datasets = ['kneeOA', 'plosONE', 'cLBP'] #'cLBP' # 'sEEG' 
+datasets = ['kneeOA', 'plosONE', 'cLBP'] # 'sEEG' 
 combined_trial_metrics = []
 combined_trial_data = []
 FIGPATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures'
@@ -268,48 +268,144 @@ plt.savefig(f'{FIGPATH}/raw_distributions_by_group.png', dpi=300, bbox_inches='t
 plt.show()
 
 # ========================================================
-# Plot OH and OA magnitude by clinical group box plot
-fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+# Plot OH and OA magnitude by clinical group (subject-averaged)
+# + pairwise Welch t-tests + FDR correction + significance bars + n subjects
+# ========================================================
+from itertools import combinations
+from statsmodels.stats.multitest import multipletests
 
+subj_avg = (
+    unified_data[unified_data['trial_type'].isin(['onset', 'offset'])]
+    .groupby(['subject', 'group_label', 'trial_type'], as_index=False)['abs_normalized_pain_change']
+    .mean()
+    .rename(columns={'abs_normalized_pain_change': 'mean_abs_normalized_pain_change'})
+)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
 order = ['Control', 'Low', 'High']
 
-for ax, trial_type, title in zip(
-    axes,
-    ['onset', 'offset'],
-    ['Onset Trials', 'Offset Trials']
-):
-    subset = unified_data[unified_data['trial_type'] == trial_type].copy()
-    
+panel_data = {}
+tests_by_panel = {0: [], 1: []}
+
+def p_to_stars(p):
+    if p < 0.001:
+        return '***'
+    if p < 0.01:
+        return '**'
+    if p < 0.05:
+        return '*'
+    return 'ns'
+
+def add_sig_bar(ax, x1, x2, y, h, text):
+    ax.plot([x1, x1, x2, x2], [y, y + h, y + h, y], lw=1.4, c='black')
+    ax.text((x1 + x2) / 2, y + h, text, ha='center', va='bottom',
+            fontsize=11, fontweight='bold', color='black')
+
+# 1) Build per-panel datasets and run pairwise tests
+for ax_idx, (trial_type, title) in enumerate([
+    ('onset', 'Onset Trials'),
+    ('offset', 'Offset Trials')
+]):
+    subset = subj_avg[subj_avg['trial_type'] == trial_type].copy()
+    panel_data[ax_idx] = subset
+
+    group_series = {
+        g: subset.loc[subset['group_label'] == g, 'mean_abs_normalized_pain_change'].dropna()
+        for g in order
+    }
+    present_groups = [g for g in order if len(group_series[g]) > 1]
+
+    # Pairwise independent t-tests (Welch)
+    raw_tests = []
+    for g1, g2 in combinations(present_groups, 2):
+        t_stat, p_raw = stats.ttest_ind(group_series[g1], group_series[g2], equal_var=False, nan_policy='omit')
+        raw_tests.append({'g1': g1, 'g2': g2, 't_stat': t_stat, 'p_raw': p_raw})
+
+    # FDR correction within this panel
+    if raw_tests:
+        pvals = [t['p_raw'] for t in raw_tests]
+        reject, p_fdr, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
+        for i, t in enumerate(raw_tests):
+            t['p_fdr'] = p_fdr[i]
+            t['sig'] = bool(reject[i])
+            tests_by_panel[ax_idx].append(t)
+
+# 2) Plot each panel and annotate n + significance bars
+for ax_idx, ax in enumerate(axes):
+    subset = panel_data[ax_idx]
+    trial_type = 'onset' if ax_idx == 0 else 'offset'
+    title = 'Onset Trials' if ax_idx == 0 else 'Offset Trials'
+
     sns.violinplot(
         data=subset,
         x='group_label',
-        y='abs_normalized_pain_change',
+        y='mean_abs_normalized_pain_change',
         order=order,
         palette=GROUP_COLORS,
         inner='box',
         ax=ax
     )
-    
+
     sns.stripplot(
         data=subset,
         x='group_label',
-        y='abs_normalized_pain_change',
+        y='mean_abs_normalized_pain_change',
         order=order,
         color='black',
-        alpha=0.25,
-        size=3,
+        alpha=0.35,
+        size=4,
         ax=ax
     )
-    
-    ax.set_title(f'{title}: Normalized Pain Change')
+
+    ax.set_title(f'{title}: Subject-Averaged Normalized Pain Change')
     ax.set_xlabel('Clinical Group')
     ax.set_ylabel('Normalized Pain Change (%)')
     ax.grid(True, alpha=0.3)
 
+    # n subjects per group
+    counts = (
+        subset.groupby('group_label')['subject']
+        .nunique()
+        .reindex(order)
+        .fillna(0)
+        .astype(int)
+    )
+
+    y_min, y_max = ax.get_ylim()
+    y_span = max(y_max - y_min, 1e-6)
+    y_n = y_min + 0.03 * y_span
+
+    for xi, g in enumerate(order):
+        ax.text(
+            xi, y_n, f'n={counts[g]}',
+            ha='center', va='bottom',
+            fontsize=10, fontweight='bold',
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8, edgecolor='none')
+        )
+
+    # Significant pairs for this panel
+    sig_tests = [t for t in tests_by_panel[ax_idx] if t['sig']]
+    if sig_tests:
+        x_map = {g: i for i, g in enumerate(order)}
+        base_y = y_max + 0.04 * y_span
+        step = 0.08 * y_span
+        h = 0.02 * y_span
+
+        for k, t in enumerate(sig_tests):
+            x1, x2 = x_map[t['g1']], x_map[t['g2']]
+            y = base_y + k * step
+            add_sig_bar(ax, x1, x2, y, h, p_to_stars(t['p_fdr']))
+
+        top = base_y + (len(sig_tests) - 1) * step + h + 0.06 * y_span
+        ax.set_ylim(y_min, top)
+
 plt.tight_layout()
-plt.savefig(f'{FIGPATH}/normalized_pain_change_by_group_split_by_trial_type.png',
-            dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+plt.savefig(
+    f'{FIGPATH}/normalized_pain_change_by_group_split_by_trial_type_subject_avg.png',
+    dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none'
+)
 plt.show()
+
 
 #%%
 # ==================================================================================================================
@@ -348,7 +444,6 @@ for new_col, source_col in preceding_metrics.items():
 # Filter for onset/offset trials (your main contrast trials)
 contrast_trials = unified_data[unified_data['trial_type'].isin(['onset', 'offset'])].copy()
 
-#%%
 # Analysis combinations
 # NEW 3/17/26: Split up positive and negative values
 analyses = [
@@ -479,217 +574,108 @@ plt.tight_layout()
 plt.show()
 
 #%%
-# ========================================================
-# STATISTICAL ANALYSIS: GROUP x SEQUENCE INTERACTIONS
-# Testing whether clinical groups differ in how previous contrast experiences affect current responses
-# Based on Kahneman et al. (1993) peak-end rule - using normalized pain change as measure of contrast experience
-# ========================================================
-print("\n=== TESTING GROUP x SEQUENCE INTERACTIONS ===")
-print("Research Question: Do clinical groups show different carryover effects from previous pain experiences?")
-
-# Test for group differences in sequence effects using LME
-sequence_results = {}
-
-for trial_type in ['onset', 'offset']:
-    print(f"\n{'='*60}")
-    print(f"{trial_type.upper()} SEQUENCE EFFECTS ANALYSIS")
-    print(f"{'='*60}")
-    
-    # Filter data - include ALL preceding trial types that have normalized pain change
-    analysis_data = contrast_trials[
-        (contrast_trials['trial_type'] == trial_type) & 
-        (contrast_trials['preceding_abs_normalized_pain_change'].notna()) &
-        (contrast_trials['abs_normalized_pain_change'].notna())
-    ].copy()
-    
-    print(f"Analysis dataset:")
-    print(f"  Total trials: {len(analysis_data)}")
-    print(f"  Subjects: {analysis_data['subject'].nunique()}")
-    print(f"  Preceding trial types: {analysis_data['preceding_trial_type'].value_counts().to_dict()}")
-    
-    print(f"\nSample sizes by group:")
-    sample_counts = analysis_data['group_label'].value_counts()
-    for group, count in sample_counts.items():
-        n_subjects = analysis_data[analysis_data['group_label'] == group]['subject'].nunique()
-        print(f"  {group}: {count} trials from {n_subjects} subjects")
-    
-    try:
-        print(f"\nFitting statistical models...")
-        
-        # Model 1: Main effects only
-        print("  Model 1: Main effects only")
-        model_main = mixedlm(
-            "abs_normalized_pain_change ~ C(group_label) + preceding_abs_normalized_pain_change", 
-            data=analysis_data,
-            groups=analysis_data["subject"]
-        )
-        result_main = model_main.fit(reml=False)
-        
-        # Model 2: With interaction
-        print("  Model 2: With group x sequence interaction")
-        model_interaction = mixedlm(
-            "abs_normalized_pain_change ~ C(group_label) * preceding_abs_normalized_pain_change", 
-            data=analysis_data,
-            groups=analysis_data["subject"]
-        )
-        result_interaction = model_interaction.fit(reml=False)
-        
-        # Likelihood ratio test for interaction
-        lr_stat = 2 * (result_interaction.llf - result_main.llf)
-        df_diff = len(result_interaction.params) - len(result_main.params)
-        p_interaction = 1 - stats.chi2.cdf(lr_stat, df=df_diff)
-        
-        print(f"\nMODEL COMPARISON:")
-        print(f"  Main effects model:")
-        print(f"    Log-likelihood: {result_main.llf:.2f}")
-        print(f"    AIC: {result_main.aic:.2f}")
-        print(f"    Parameters: {len(result_main.params)}")
-        
-        print(f"  Interaction model:")
-        print(f"    Log-likelihood: {result_interaction.llf:.2f}")
-        print(f"    AIC: {result_interaction.aic:.2f}")
-        print(f"    Parameters: {len(result_interaction.params)}")
-        
-        print(f"\nINTERACTION TEST:")
-        print(f"  Likelihood ratio: χ² = {lr_stat:.2f}, df = {df_diff}, p = {p_interaction:.4f}")
-        
-        # Determine significance and interpret
-        if p_interaction < 0.05:
-            sig_marker = "***" if p_interaction < 0.001 else "**" if p_interaction < 0.01 else "*"
-            print(f"  Result: SIGNIFICANT GROUP x SEQUENCE INTERACTION {sig_marker}")
-            print(f"  Interpretation: Clinical groups differ in how previous pain experiences affect current responses")
-            
-            print(f"\nINTERACTION MODEL DETAILS:")
-            print(result_interaction.summary())
-            
-        else:
-            print(f"  Result: NO SIGNIFICANT INTERACTION (p = {p_interaction:.4f})")
-            print(f"  Interpretation: All groups show similar carryover effects from previous trials")
-            
-            print(f"\nMAIN EFFECTS MODEL DETAILS:")
-            print(result_main.summary())
-            
-            # Interpret main effects
-            params = result_main.params
-            if 'preceding_abs_normalized_pain_change' in params.index:
-                sequence_effect = params['preceding_abs_normalized_pain_change']
-                print(f"\nMAIN EFFECTS INTERPRETATION:")
-                print(f"  Overall sequence effect: {sequence_effect:.4f}")
-                print(f"    → 1% increase in previous pain change → {sequence_effect:.4f}% change in current response")
-        
-        # Store results
-        sequence_results[trial_type] = {
-            'main_model': result_main,
-            'interaction_model': result_interaction,
-            'interaction_p': p_interaction,
-            'lr_stat': lr_stat,
-            'df_diff': df_diff,
-            'significant_interaction': p_interaction < 0.05,
-            'data': analysis_data,
-            'n_trials': len(analysis_data),
-            'n_subjects': analysis_data['subject'].nunique()
-        }
-        
-    except Exception as e:
-        print(f"  ERROR: Model fitting failed - {e}")
-        import traceback
-        traceback.print_exc()
-
-
-#%%
 # ================================================================================================================
 # ######################################## 3. HABITUATORS VS SENSITIZERS ANALYSIS ###############################
 # ================================================================================================================
-analysis_data = unified_data.copy()
-# ========================================================
-# CALCULATE PAIN TRAJECTORIES FOR EACH SUBJECT
-# ========================================================
-# THE OLD WAY BASED ON SLOPE OF MAX PAIN
-# def calculate_pain_trajectory(subject_data):
-#     """Calculate pain trajectory using max pain over all trials"""
-#     # Use all trial types, not just contrast trials
-#     clean_data = subject_data.dropna(subset=['abs_max_val', 'trial_num']).sort_values('trial_num')
-    
-#     if len(clean_data) < 3:
-#         return np.nan, np.nan, np.nan
-    
-#     if clean_data['abs_max_val'].var() == 0:
-#         return 0.0, np.nan, np.nan
-    
-#     try:
-#         slope, intercept, r_value, p_value, std_err = stats.linregress(
-#             clean_data['trial_num'],
-#             clean_data['abs_max_val']
-#         )
-#         return slope, r_value, p_value
-#     except:
-#         return np.nan, np.nan, np.nan
+import sys
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/single_dataset_analysis/')
+from habituator_sensitizers_ControlTrial import calculate_slope, calculate_windowed_difference, calculate_auc_difference, calculate_normalized_time_aware_change, bootstrap_classification, plot_hold_trials_for_subject
 
-# A NEW WAY BASED ON NORMALIZED PAIN CHANGE ON HOLD TRIALS
-def calculate_pain_trajectory(subject_data):
-    """Calculate pain trajectory using sign of normalized pain change on hold trials"""
-    hold_data = subject_data[
-        subject_data['trial_type'].isin(['t1_hold', 't2_hold'])
-    ].dropna(subset=['abs_normalized_pain_change', 'trial_num']).sort_values('trial_num')
-    
-    if len(hold_data) < 3:
-        return np.nan, np.nan, np.nan
-    
-    if hold_data['abs_normalized_pain_change'].var() == 0:
-        return 0.0, np.nan, np.nan
-    
-    # 
+hold_trials = unified_data[unified_data['trial_type'].astype(str).str.contains('hold', case=False, na=False)].copy()
+hold_results = []
+for _, row in hold_trials.iterrows():
+    subject_id = row['subject']
+    dataset_name = row['dataset']
+    trial_num = row['trial_num']
+    c_start = row['C_start']
+    c_end = row['C_end']
+    a_start = row['A_start']
 
-# Calculate trajectories for each subject
-print("Calculating pain trajectories for each subject...")
-subject_trajectories = []
+    trial_ts = all_trial_data[
+        (all_trial_data['dataset'] == dataset_name) &
+        (all_trial_data['subject'] == subject_id) &
+        (all_trial_data['trial_num'] == trial_num)
+    ].copy()
 
-for subject, subj_df in unified_data.groupby('subject'):
-    slope, r_val, p_val = calculate_pain_trajectory(subj_df)
-    
-    # Get group label for this subject
-    group_label = subj_df['group_label'].iloc[0] if 'group_label' in subj_df.columns else 'unknown'
-    dataset = subj_df['dataset'].iloc[0] if 'dataset' in subj_df.columns else 'unknown'
-    
-    subject_trajectories.append({
-        'subject': subject,
+    if len(trial_ts) < 2:
+        continue
+
+    slope = calculate_slope(trial_ts, C_start=c_start, C_end=c_end)
+    diff_5s = calculate_windowed_difference(trial_ts, window_size=5, A_start=a_start, C_end=c_end)
+    diff_10s = calculate_windowed_difference(trial_ts, window_size=10, A_start=a_start, C_end=c_end)
+    auc_diff_10s = calculate_auc_difference(trial_ts, window_size=10, A_start=a_start, C_end=c_end)
+    norm_change = calculate_normalized_time_aware_change(row, max_floor=5)
+
+    hold_results.append({
+        'dataset': dataset_name,
+        'subject': subject_id,
+        'trial_num': trial_num,
+        'trial_type': row['trial_type'],
         'slope': slope,
-        'r_value': r_val,
-        'p_value': p_val,
-        'group_label': group_label,
-        'dataset': dataset,
-        'n_trials': len(subj_df)
+        'late5_minus_early5': diff_5s,
+        'late10_minus_early10': diff_10s,
+        'auc_diff_10s': auc_diff_10s,
+        'time_aware_norm_change': norm_change
     })
 
-trajectory_df = pd.DataFrame(subject_trajectories)
+hold_metrics_df = pd.DataFrame(hold_results)
 
-# Remove subjects with insufficient data
-trajectory_df = trajectory_df.dropna(subset=['slope'])
-print(f"Analyzed trajectories for {len(trajectory_df)} subjects")
+classification_results = []
+
+for (dataset_name, subject_id), subject_trials in hold_metrics_df.groupby(['dataset', 'subject']):
+    classification, observed_mean, lower_bound, upper_bound = bootstrap_classification(
+        subject_trials['slope'],
+        n_boot=10000,
+        ci=95,
+        random_state=42
+    )
+
+    classification_results.append({
+        'dataset': dataset_name,
+        'subject': subject_id,
+        'n_trials': len(subject_trials),
+        'observed_mean_slope': observed_mean,
+        'classification': classification,
+        'ci_lower': lower_bound,
+        'ci_upper': upper_bound
+    })
+slope_classification_df = pd.DataFrame(classification_results)
+
+print(f"Analyzed hold trial slopes for {len(slope_classification_df)} subjects")
+unified_data = unified_data.merge(
+    slope_classification_df[['dataset', 'subject', 'classification', 'observed_mean_slope']],
+    on=['dataset', 'subject'],
+    how='left'
+)
+subject_level_slopes = slope_classification_df.merge(
+    all_groups[['subject','group_label']],
+    on='subject',
+    how='left'
+)
+
 
 # Plot distribution of slopes first
 plt.figure(figsize=(12, 8))
-
 # Plot by clinical group
 for group in ['Control', 'Low', 'High']:
-    if group in trajectory_df['group_label'].values:
-        group_data = trajectory_df[trajectory_df['group_label'] == group]['slope']
+    if group in subject_level_slopes['group_label'].values:
+        group_data = subject_level_slopes[subject_level_slopes['group_label'] == group]['observed_mean_slope']
         plt.hist(group_data, bins=15, alpha=0.6, 
                 color=GROUP_COLORS[group], 
                 label=f'{group} (n={len(group_data)})',
                 edgecolor='black', linewidth=0.5)
 plt.axvline(x=0, color='black', linestyle='--', linewidth=2, label='No change')
-plt.xlabel('Max Pain Slope (points per trial)', fontsize=12)
+plt.xlabel('Mean Hold-Trial Slope in Period C', fontsize=12)
 plt.ylabel('Number of Subjects', fontsize=12)
-plt.title('Distribution of Individual Pain Trajectories by Clinical Group', fontsize=14)
+plt.title('Distribution of Individual Pain Slopes by Clinical Group', fontsize=14)
 plt.legend()
 plt.grid(True, alpha=0.3)
 
 # Add statistics
 stats_text = []
 for group in ['Control', 'Low', 'High']:
-    if group in trajectory_df['group_label'].values:
-        group_data = trajectory_df[trajectory_df['group_label'] == group]['slope']
+    if group in subject_level_slopes['group_label'].values:
+        group_data = subject_level_slopes[subject_level_slopes['group_label'] == group]['observed_mean_slope']
         mean_slope = group_data.mean()
         std_slope = group_data.std()
         stats_text.append(f'{group}: μ={mean_slope:.2f}, σ={std_slope:.2f}')
@@ -702,106 +688,45 @@ plt.text(0.02, 0.98, '\n'.join(stats_text),
 plt.tight_layout()
 plt.show()
 
-# Cutoff based on SD
-mean_slope = trajectory_df['slope'].mean()
-std_slope = trajectory_df['slope'].std()
-lower_thresh = mean_slope - std_slope
-upper_thresh = mean_slope + std_slope
-
-# Classify subjects based on slope magnitude and significance
-def classify_subject(row):
-    if pd.isna(row['slope']):
-        return 'insufficient_data'
-    elif row['slope'] < lower_thresh:
-        return 'habituator'
-    elif row['slope'] > upper_thresh:
-        return 'sensitizer'
-    else:
-        return 'no_trend'
-
-trajectory_df['trajectory_classification'] = trajectory_df.apply(classify_subject, axis=1)
-
-print(f"\nTrajectory Classification Results:")
-print(trajectory_df['trajectory_classification'].value_counts())
-
-print(f"\nBy Clinical Group:")
-trajectory_summary = trajectory_df.groupby(['group_label', 'trajectory_classification']).size().unstack(fill_value=0)
-print(trajectory_summary)
-trajectory_df.to_csv(
-    f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/trajectory_classifications.csv',
+slope_classification_df.to_csv(
+    f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/holdslope_classifications.csv',
     index=False
 )
 
-#%%
 # ========================================================
 # EXAMPLE SUBJECTS FOR EACH TRAJECTORY TYPE
 # ========================================================
-# Plot example habituator
-if len(trajectory_df[trajectory_df['trajectory_classification'] == 'habituator']) > 0:
-    example_hab = trajectory_df[trajectory_df['trajectory_classification'] == 'habituator'].iloc[0]
-    subj_data = analysis_data[analysis_data['subject'] == example_hab['subject']].sort_values('trial_num')
-    
-    plt.figure(figsize=(10, 6))
-    plt.scatter(subj_data['trial_num'], subj_data['abs_max_val'], 
-               c=[GROUP_COLORS.get(subj_data['group_label'].iloc[0], 'gray')], 
-               alpha=0.7, s=60, edgecolors='black')
-    
-    # Add regression line
-    slope = example_hab['slope']
-    intercept = subj_data['abs_max_val'].mean() - slope * subj_data['trial_num'].mean()
-    x_vals = np.array([subj_data['trial_num'].min(), subj_data['trial_num'].max()])
-    y_vals = intercept + slope * x_vals
-    plt.plot(x_vals, y_vals, 'r-', linewidth=2)
-    
-    plt.xlabel('Trial Number')
-    plt.ylabel('Maximum Pain Rating')
-    plt.ylim(0, 100)
-    plt.title(f'Example Habituator: Subject {example_hab["subject"]} ({example_hab["group_label"]})\n'
-              f'Slope = {slope:.2f}, r = {example_hab["r_value"]:.2f}, p = {example_hab["p_value"]:.3f}')
-    plt.grid(True, alpha=0.3)
-    plt.savefig(f"{FIGPATH}/example_habituator.svg")
-    plt.show()
+hab_subject = slope_classification_df[
+    slope_classification_df['classification'] == 'habituator'
+]['subject'].sample(1).iloc[0]
 
-# Plot example sensitizer
-if len(trajectory_df[trajectory_df['trajectory_classification'] == 'sensitizer']) > 0:
-    example_sen = trajectory_df[trajectory_df['trajectory_classification'] == 'sensitizer'].iloc[0]
-    subj_data = analysis_data[analysis_data['subject'] == example_sen['subject']].sort_values('trial_num')
-    
-    plt.figure(figsize=(10, 6))
-    plt.scatter(subj_data['trial_num'], subj_data['abs_max_val'],
-               c=[GROUP_COLORS.get(subj_data['group_label'].iloc[0], 'gray')], 
-               alpha=0.7, s=60, edgecolors='black')
-    
-    # Add regression line
-    slope = example_sen['slope']
-    intercept = subj_data['abs_max_val'].mean() - slope * subj_data['trial_num'].mean()
-    x_vals = np.array([subj_data['trial_num'].min(), subj_data['trial_num'].max()])
-    y_vals = intercept + slope * x_vals
-    plt.plot(x_vals, y_vals, 'r-', linewidth=2)
-    
-    plt.xlabel('Trial Number')
-    plt.ylabel('Maximum Pain Rating')
-    plt.ylim(0, 100)
-    plt.title(f'Example Sensitizer: Subject {example_sen["subject"]} ({example_sen["group_label"]})\n'
-              f'Slope = {slope:.2f}, r = {example_sen["r_value"]:.2f}, p = {example_sen["p_value"]:.3f}')
-    plt.grid(True, alpha=0.3)
-    plt.savefig(f"{FIGPATH}/example_sensitizer.svg")
-    plt.show()
+sens_subject = slope_classification_df[
+    slope_classification_df['classification'] == 'sensitizer'
+]['subject'].sample(1).iloc[0]
+
+nr_subject = slope_classification_df[
+    slope_classification_df['classification'] == 'no trend'
+]['subject'].sample(1).iloc[0]
+
+# Plot examples
+plot_hold_trials_for_subject(hab_subject, hold_metrics_df, all_trial_data, title=f"Example Habituator (Subject {hab_subject})")
+plot_hold_trials_for_subject(sens_subject, hold_metrics_df, all_trial_data, title=f"Example Sensitizer (Subject {sens_subject})")
+plot_hold_trials_for_subject(nr_subject, hold_metrics_df, all_trial_data, title=f"Example No Trend (Subject {nr_subject})")
+
+
 
 #%%
 # ==========================================================================
 # TEMPORAL CONTRAST BY TRAJECTORY - CORRECTED FOR PSEUDOREPLICATION
 # ==========================================================================
-
 print("=== CORRECTING FOR PSEUDOREPLICATION ===")
 print("Averaging trials within subjects first...")
-contrast_analysis = unified_data.merge(trajectory_df[['subject', 'trajectory_classification']], 
-                                         on='subject', how='left')
+contrast_analysis = unified_data.copy()
 # Calculate subject-level averages for each trial type
 subject_averages = []
 
 for subject, subj_data in contrast_analysis.groupby('subject'):
-    traj_class = subj_data['trajectory_classification'].iloc[0]
+    classification = subj_data['classification'].iloc[0]
     # Average onset trials for this subject
     onset_trials = subj_data[subj_data['trial_type'] == 'onset']['abs_normalized_pain_change']
     offset_trials = subj_data[subj_data['trial_type'] == 'offset']['abs_normalized_pain_change']
@@ -809,7 +734,7 @@ for subject, subj_data in contrast_analysis.groupby('subject'):
     if len(onset_trials) > 0:
         subject_averages.append({
             'subject': subject,
-            'trajectory_classification': traj_class,
+            'classification': classification,
             'trial_type': 'onset',
             'avg_normalized_pain_change': onset_trials.mean(),
             'n_trials': len(onset_trials)
@@ -818,7 +743,7 @@ for subject, subj_data in contrast_analysis.groupby('subject'):
     if len(offset_trials) > 0:
         subject_averages.append({
             'subject': subject,
-            'trajectory_classification': traj_class,
+            'classification': classification,
             'trial_type': 'offset', 
             'avg_normalized_pain_change': offset_trials.mean(),
             'n_trials': len(offset_trials)
@@ -830,11 +755,11 @@ print(f"Subject-level data: {len(subject_avg_df)} subject-trial_type combination
 print(f"From {subject_avg_df['subject'].nunique()} unique subjects")
 
 # Now plot using subject averages (proper n)
-fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+fig, axes = plt.subplots(1, 2, figsize=(20, 10))
 
 # Define colors and order
-traj_colors = {'habituator': 'blue', 'no_trend': 'gray', 'sensitizer': 'red'}
-traj_order = ['habituator', 'no_trend', 'sensitizer']
+traj_colors = {'habituator': 'blue', 'no trend': 'gray', 'sensitizer': 'red'}
+traj_order = ['habituator', 'no trend', 'sensitizer']
 
 def add_significance_brackets(ax, x1, x2, y, h, text, fontsize=12):
     """Add significance brackets between bars"""
@@ -845,15 +770,15 @@ def add_significance_brackets(ax, x1, x2, y, h, text, fontsize=12):
 # ONSET TRIALS
 onset_subj_data = subject_avg_df[subject_avg_df['trial_type'] == 'onset']
 if len(onset_subj_data) > 0:
-    sns.violinplot(data=onset_subj_data, x='trajectory_classification', y='avg_normalized_pain_change',
+    sns.violinplot(data=onset_subj_data, x='classification', y='avg_normalized_pain_change',
                    palette=traj_colors, inner='box', ax=axes[0], order=traj_order)
-    axes[0].set_title('Onset Hyperalgesia by Trajectory Group\n(Subject Averages)', fontweight='bold', fontsize=14)
-    axes[0].set_xlabel('Trajectory Group', fontweight='bold', fontsize=12)
+    axes[0].set_title('Onset Hyperalgesia by Classification\n(Subject Averages)', fontweight='bold', fontsize=14)
+    axes[0].set_xlabel('Classification', fontweight='bold', fontsize=12)
     axes[0].set_ylabel('Average Normalized Pain Change (%)', fontweight='bold', fontsize=12)
     
     # Add sample sizes (now subjects, not trials!)
     for i, traj_group in enumerate(traj_order):
-        n_subjects = len(onset_subj_data[onset_subj_data['trajectory_classification'] == traj_group])
+        n_subjects = len(onset_subj_data[onset_subj_data['classification'] == traj_group])
         if n_subjects > 0:
             axes[0].text(i, axes[0].get_ylim()[0] + 0.02 * (axes[0].get_ylim()[1] - axes[0].get_ylim()[0]), 
                         f'n={n_subjects} subjects', ha='center', fontweight='bold', fontsize=11)
@@ -861,25 +786,25 @@ if len(onset_subj_data) > 0:
 # OFFSET TRIALS  
 offset_subj_data = subject_avg_df[subject_avg_df['trial_type'] == 'offset']
 if len(offset_subj_data) > 0:
-    sns.violinplot(data=offset_subj_data, x='trajectory_classification', y='avg_normalized_pain_change',
+    sns.violinplot(data=offset_subj_data, x='classification', y='avg_normalized_pain_change',
                    palette=traj_colors, inner='box', ax=axes[1], order=traj_order)
-    axes[1].set_title('Offset Analgesia by Trajectory Group\n(Subject Averages)', fontweight='bold', fontsize=14)
-    axes[1].set_xlabel('Trajectory Group', fontweight='bold', fontsize=12)
+    axes[1].set_title('Offset Analgesia by Classification\n(Subject Averages)', fontweight='bold', fontsize=14)
+    axes[1].set_xlabel('Classification', fontweight='bold', fontsize=12)
     axes[1].set_ylabel('Average Normalized Pain Change (%)', fontweight='bold', fontsize=12)
     
     # Add sample sizes
     for i, traj_group in enumerate(traj_order):
-        n_subjects = len(offset_subj_data[offset_subj_data['trajectory_classification'] == traj_group])
+        n_subjects = len(offset_subj_data[offset_subj_data['classification'] == traj_group])
         if n_subjects > 0:
             axes[1].text(i, axes[1].get_ylim()[0] + 0.02 * (axes[1].get_ylim()[1] - axes[1].get_ylim()[0]), 
                         f'n={n_subjects} subjects', ha='center', fontweight='bold', fontsize=11)
 
-# Re-run statistics on subject averages
+# Statistics on subject averages
 print("\n=== STATISTICS ON SUBJECT AVERAGES ===")
 # Onset comparisons
 onset_groups = {}
 for traj_group in traj_order:
-    group_data = onset_subj_data[onset_subj_data['trajectory_classification'] == traj_group]['avg_normalized_pain_change']
+    group_data = onset_subj_data[onset_subj_data['classification'] == traj_group]['avg_normalized_pain_change']
     if len(group_data) > 0:
         onset_groups[traj_group] = group_data
         print(f"Onset {traj_group}: n={len(group_data)} subjects, mean={group_data.mean():.2f}")
@@ -887,52 +812,126 @@ for traj_group in traj_order:
 # Offset comparisons  
 offset_groups = {}
 for traj_group in traj_order:
-    group_data = offset_subj_data[offset_subj_data['trajectory_classification'] == traj_group]['avg_normalized_pain_change']
+    group_data = offset_subj_data[offset_subj_data['classification'] == traj_group]['avg_normalized_pain_change']
     if len(group_data) > 0:
         offset_groups[traj_group] = group_data
         print(f"Offset {traj_group}: n={len(group_data)} subjects, mean={group_data.mean():.2f}")
+
+# Statistical tests with FDR correction
+print("\n--- PAIRWISE T-TESTS (with FDR correction) ---")
+from itertools import combinations
+
+# Onset pairwise comparisons
+onset_sig_pairs = []
+if len(onset_groups) > 1:
+    print("\nONSET ONSET:")
+    onset_pvalues = []
+    onset_comparisons = []
+    for group1, group2 in combinations(traj_order, 2):
+        if group1 in onset_groups and group2 in onset_groups:
+            t_stat, p_val = scipy_stats.ttest_ind(onset_groups[group1], onset_groups[group2])
+            onset_pvalues.append(p_val)
+            onset_comparisons.append((group1, group2, t_stat, p_val))
+    
+    # Apply FDR correction
+    if onset_pvalues:
+        from statsmodels.stats.multitest import multipletests
+        reject, pvals_corrected, _, _ = multipletests(onset_pvalues, alpha=0.05, method='fdr_bh')
+        for (group1, group2, t_stat, p_val), p_corr, is_sig in zip(onset_comparisons, pvals_corrected, reject):
+            sig_marker = "***" if is_sig else "ns"
+            print(f"  {group1} vs {group2}: t={t_stat:.3f}, p_orig={p_val:.4f}, p_FDR={p_corr:.4f} {sig_marker}")
+            if is_sig:
+                onset_sig_pairs.append((traj_order.index(group1), traj_order.index(group2)))
+
+# Offset pairwise comparisons
+offset_sig_pairs = []
+if len(offset_groups) > 1:
+    print("\nOFFSET:")
+    offset_pvalues = []
+    offset_comparisons = []
+    for group1, group2 in combinations(traj_order, 2):
+        if group1 in offset_groups and group2 in offset_groups:
+            t_stat, p_val = scipy_stats.ttest_ind(offset_groups[group1], offset_groups[group2])
+            offset_pvalues.append(p_val)
+            offset_comparisons.append((group1, group2, t_stat, p_val))
+    
+    # Apply FDR correction
+    if offset_pvalues:
+        from statsmodels.stats.multitest import multipletests
+        reject, pvals_corrected, _, _ = multipletests(offset_pvalues, alpha=0.05, method='fdr_bh')
+        for (group1, group2, t_stat, p_val), p_corr, is_sig in zip(offset_comparisons, pvals_corrected, reject):
+            sig_marker = "***" if is_sig else "ns"
+            print(f"  {group1} vs {group2}: t={t_stat:.3f}, p_orig={p_val:.4f}, p_FDR={p_corr:.4f} {sig_marker}")
+            if is_sig:
+                offset_sig_pairs.append((traj_order.index(group1), traj_order.index(group2)))
+
+# Add significance markers to plots
+y_max_onset = axes[0].get_ylim()[1]
+line_height = y_max_onset * 0.02
+for idx, (i1, i2) in enumerate(onset_sig_pairs):
+    y_pos = y_max_onset * (0.95 + idx * 0.12)
+    axes[0].plot([i1, i2], [y_pos, y_pos], 'k-', linewidth=1.5)
+    x_pos = (i1 + i2) / 2
+    axes[0].text(x_pos, y_pos + line_height, '***', ha='center', fontsize=12, fontweight='bold', color='black')
+
+y_max_offset = axes[1].get_ylim()[1]
+line_height = y_max_offset * 0.02
+for idx, (i1, i2) in enumerate(offset_sig_pairs):
+    y_pos = y_max_offset * (0.95 + idx * 0.12)
+    axes[1].plot([i1, i2], [y_pos, y_pos], 'k-', linewidth=1.5)
+    x_pos = (i1 + i2) / 2
+    axes[1].text(x_pos, y_pos + line_height, '***', ha='center', fontsize=12, fontweight='bold', color='black')
 
 plt.tight_layout()
 plt.show()
 
 
 #%%
-# QUESTION: Is there a significant difference trajectory value across clinical groups?
+# QUESTION: Is there a significant difference in HOLD slopes across clinical groups?
 # Statistical test: Do trajectory slopes differ across clinical groups?
 print(f"\n{'='*60}")
-print("TRAJECTORY SLOPES BY CLINICAL GROUP")
+print("HOLD SLOPES BY CLINICAL GROUP")
 print(f"{'='*60}")
+# add group labels to slope_classification_df
+if 'group_label' not in slope_classification_df.columns:
+    slope_classification_df = slope_classification_df.merge(
+        all_groups[['subject', 'group_label']],
+        on='subject',
+        how='left'
+    )
 
 # Create visualization
 fig, axes = plt.subplots(1, 2, figsize=(16, 8))
 
 # Plot 1: Box plot of slopes by group
-sns.boxplot(data=trajectory_df, x='group_label', y='slope', palette=GROUP_COLORS, ax=axes[0])
-sns.stripplot(data=trajectory_df, x='group_label', y='slope', color='black', alpha=0.4, size=6, ax=axes[0])
-axes[0].set_title('Distribution of Trajectory Slopes by Clinical Group', fontweight='bold', fontsize=13)
+sns.boxplot(data=slope_classification_df, x='group_label', y='observed_mean_slope', palette=GROUP_COLORS, ax=axes[0])
+sns.stripplot(data=slope_classification_df, x='group_label', y='observed_mean_slope', color='black', alpha=0.4, size=6, ax=axes[0])
+axes[0].set_title('Distribution of HOLD Slopes by Clinical Group', fontweight='bold', fontsize=13)
 axes[0].set_xlabel('Clinical Group', fontweight='bold')
-axes[0].set_ylabel('Slope (pain points per trial)', fontweight='bold')
+axes[0].set_ylabel('Mean HOLD Slope', fontweight='bold')
 axes[0].legend()
 axes[0].grid(True, alpha=0.3, axis='y')
 
 # Plot 2: Violin plot for better distribution visualization
-sns.violinplot(data=trajectory_df, x='group_label', y='slope', palette=GROUP_COLORS, ax=axes[1])
-axes[1].set_title('Density Distribution of Slopes by Clinical Group', fontweight='bold', fontsize=13)
+sns.violinplot(data=slope_classification_df, x='group_label', y='observed_mean_slope', palette=GROUP_COLORS, ax=axes[1])
+axes[1].set_title('Density Distribution of HOLD Slopes by Clinical Group', fontweight='bold', fontsize=13)
 axes[1].set_xlabel('Clinical Group', fontweight='bold')
-axes[1].set_ylabel('Slope (pain points per trial)', fontweight='bold')
+axes[1].set_ylabel('Mean HOLD Slope', fontweight='bold')
 axes[1].legend()
 axes[1].grid(True, alpha=0.3, axis='y')
 
-plt.tight_layout()
-plt.savefig(f'{FIGPATH}/trajectory_slopes_by_group.svg', dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
-plt.show()
-
-# Statistical analysis: ANOVA comparing slopes across groups
+# Statistical analysis: ANOVA + pairwise tests with FDR, then plot sig bars
 print("\nStatistical Comparison of Slopes Across Groups:")
+group_order = ['Control', 'Low', 'High']
+present_groups = []
 groups_list = []
-for group in ['Control', 'Low', 'High']:
-    group_data = trajectory_df[trajectory_df['group_label'] == group]['slope']
+
+for group in group_order:
+    group_data = slope_classification_df[
+        slope_classification_df['group_label'] == group
+    ]['observed_mean_slope'].dropna()
     if len(group_data) > 0:
+        present_groups.append(group)
         groups_list.append(group_data.values)
         print(f"\n{group}:")
         print(f"  n = {len(group_data)}")
@@ -940,17 +939,89 @@ for group in ['Control', 'Low', 'High']:
         print(f"  Std = {group_data.std():.3f}")
         print(f"  Range = [{group_data.min():.3f}, {group_data.max():.3f}]")
 
+def p_to_stars(p):
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return "ns"
+
+def add_sig_bar(ax, x1, x2, y, h, text):
+    ax.plot([x1, x1, x2, x2], [y, y + h, y + h, y], lw=1.5, c='black')
+    ax.text((x1 + x2) / 2, y + h, text, ha='center', va='bottom',
+            fontsize=11, fontweight='bold', color='black')
+
+sig_pairs = []  # tuples: (group1, group2, p_fdr)
+
 # One-way ANOVA
 if len(groups_list) >= 2:
     f_stat, p_anova = stats.f_oneway(*groups_list)
-    sig = "***" if p_anova < 0.001 else "**" if p_anova < 0.01 else "*" if p_anova < 0.05 else "ns"
+    sig = p_to_stars(p_anova)
     print(f"\nOne-way ANOVA: F = {f_stat:.3f}, p = {p_anova:.4f} {sig}")
-    
-    if p_anova < 0.05:
-        print("Result: Significant difference in trajectory slopes across clinical groups")
-    else:
-        print("Result: No significant difference in trajectory slopes across clinical groups")
 
+    if p_anova < 0.05:
+        print("Result: Significant difference in HOLD slopes across clinical groups")
+    else:
+        print("Result: No significant difference in HOLD slopes across clinical groups")
+
+    # Pairwise post-hoc only if omnibus ANOVA is significant
+    if p_anova < 0.05 and len(present_groups) >= 2:
+        from itertools import combinations
+        from statsmodels.stats.multitest import multipletests
+
+        comparisons = []
+        raw_p = []
+
+        for g1, g2 in combinations(present_groups, 2):
+            d1 = slope_classification_df[
+                slope_classification_df['group_label'] == g1
+            ]['observed_mean_slope'].dropna()
+            d2 = slope_classification_df[
+                slope_classification_df['group_label'] == g2
+            ]['observed_mean_slope'].dropna()
+
+            # Welch t-test is safer when variances/sample sizes differ
+            t_stat, p_val = scipy_stats.ttest_ind(d1, d2, equal_var=False, nan_policy='omit')
+            comparisons.append((g1, g2, t_stat, p_val))
+            raw_p.append(p_val)
+
+        reject, p_fdr, _, _ = multipletests(raw_p, alpha=0.05, method='fdr_bh')
+
+        print("\nPairwise post-hoc tests (Welch t-test, FDR corrected):")
+        for (g1, g2, t_stat, p_val), keep, p_corr in zip(comparisons, reject, p_fdr):
+            mark = p_to_stars(p_corr)
+            print(f"  {g1} vs {g2}: t={t_stat:.3f}, p_raw={p_val:.4f}, p_FDR={p_corr:.4f} {mark}")
+            if keep:
+                sig_pairs.append((g1, g2, p_corr))
+
+# Add significance bars to both axes only for significant pairwise differences
+if sig_pairs:
+    x_pos = {g: i for i, g in enumerate(group_order)}
+    y = slope_classification_df['observed_mean_slope'].dropna()
+    y_min, y_max = y.min(), y.max()
+    y_span = max(y_max - y_min, 1.0)
+
+    y_start = y_max + 0.06 * y_span
+    y_step = 0.10 * y_span
+    bar_h = 0.03 * y_span
+
+    for i, (g1, g2, p_corr) in enumerate(sig_pairs):
+        x1, x2 = x_pos[g1], x_pos[g2]
+        y_i = y_start + i * y_step
+        label = p_to_stars(p_corr)
+        add_sig_bar(axes[0], x1, x2, y_i, bar_h, label)
+        add_sig_bar(axes[1], x1, x2, y_i, bar_h, label)
+
+    # Expand y-limits so bars are visible
+    top = y_start + (len(sig_pairs) - 1) * y_step + bar_h + 0.08 * y_span
+    axes[0].set_ylim(y_min - 0.05 * y_span, top)
+    axes[1].set_ylim(y_min - 0.05 * y_span, top)
+
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/hold_slopes_by_group.svg', dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+plt.show()
 # %% 
 # Break down trial_sequence effects by trajectory classification - 2x2 OVERLAY PLOTS
 print(f"\n{'='*60}")
@@ -958,14 +1029,12 @@ print("TRIAL SEQUENCE EFFECTS BY TRAJECTORY CLASSIFICATION - 2x2 OVERLAY PLOTS")
 print(f"{'='*60}")
 # Prepare plot_data
 plot_data = unified_data[unified_data['trial_type'].isin(['onset', 'offset'])].copy()
-plot_data = plot_data.merge(trajectory_df[['subject', 'trajectory_classification']],
-                            on='subject', how='left')
-plot_data = plot_data[plot_data['trajectory_classification'].isin(['habituator', 'sensitizer', 'no_trend'])].copy()
+plot_data = plot_data[plot_data['classification'].isin(['habituator', 'sensitizer', 'no trend'])].copy()
 
 metric = 'preceding_abs_normalized_pain_change'
 metric_label = 'Preceding Normalized Pain Change'
-traj_groups = ['habituator', 'no_trend', 'sensitizer']
-traj_colors = {'habituator': 'blue', 'sensitizer': 'red', 'no_trend': 'grey'}
+traj_groups = ['habituator', 'no trend', 'sensitizer']
+traj_colors = {'habituator': 'blue', 'sensitizer': 'red', 'no trend': 'grey'}
 trial_types = ['onset', 'offset']
 trial_labels = {'onset': 'Onset Hyperalgesia', 'offset': 'Offset Analgesia'}
 
@@ -992,7 +1061,7 @@ for col_idx, trial_type in enumerate(trial_types):
         if len(subset) > 0:
             # Plot each trajectory group
             for traj_group in traj_groups:
-                group_data = subset[subset['trajectory_classification'] == traj_group]
+                group_data = subset[subset['classification'] == traj_group]
                 
                 if len(group_data) > 0:
                     # Scatter plot for this group
@@ -1109,27 +1178,27 @@ for ttype in trial_types:
                 print(f"    {group}: {len(group_data)} trials from {group_data['subject'].nunique()} subjects")
 
 # %%
-# Chi-squared analysis: trajectory classification vs clinical group
-print("\n=== CHI-SQUARED ANALYSIS: TRAJECTORY CLASSIFICATION vs CLINICAL GROUP ===")
-
+# Chi-squared analysis: classification vs clinical group
+print("\n=== CHI-SQUARED ANALYSIS: CLASSIFICATION vs CLINICAL GROUP ===")
 
 # Create contingency table
-trajectory_df['group_label'] = pd.Categorical(
-    trajectory_df['group_label'],
-    categories=['Control', 'Low', 'High'],
-    ordered=True
+subject_table = (
+subject_level_slopes[['subject', 'group_label', 'classification']]
+.dropna(subset=['group_label', 'classification'])
+.drop_duplicates(subset=['subject'])
 )
 
-trajectory_df['trajectory_classification'] = pd.Categorical(
-    trajectory_df['trajectory_classification'],
-    categories=['sensitizer', 'no_trend', 'habituator'],
-    ordered=True
+contingency_table = (
+subject_table
+.groupby(['classification', 'group_label'])
+.size()
+.unstack(fill_value=0)
+.reindex(index=['sensitizer', 'no trend', 'habituator'],
+columns=['Control', 'Low', 'High'],
+fill_value=0)
 )
 
-contingency_table = pd.crosstab(
-    trajectory_df['trajectory_classification'],
-    trajectory_df['group_label']
-)
+print(contingency_table)
 
 print("Contingency Table:")
 print(contingency_table)
@@ -1145,21 +1214,21 @@ print("Expected counts:")
 print(pd.DataFrame(expected, index=contingency_table.index, columns=contingency_table.columns))
 
 if p < 0.05:
-    print("Result: Significant association between trajectory classification and clinical group")
+    print("Result: Significant association between classification and clinical group")
 else:
-    print("Result: No significant association between trajectory classification and clinical group")
+    print("Result: No significant association between classification and clinical group")
 
 # Plot it out too
 plt.figure(figsize=(10, 6))
 sns.heatmap(contingency_table, annot=True, fmt='d', cmap='Oranges', cbar=False)
-plt.title('Contingency Table: Trajectory Classification vs Clinical Group', fontweight='bold')
+plt.title('Contingency Table: Classification vs Clinical Group', fontweight='bold')
 plt.xlabel('Clinical Group', fontweight='bold')
-plt.ylabel('Trajectory Classification', fontweight='bold')
+plt.ylabel('Classification', fontweight='bold')
 plt.tight_layout()
-plt.savefig(f'{FIGPATH}/contingency_table_trajectory_vs_group.svg', dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+plt.savefig(f'{FIGPATH}/contingency_table_classification_vs_group.svg', dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
 plt.show()
 
-# %%
+# %% Look at correlations between hold slopes and clinical measures (PCS, SPCS, pain ratings, HPT)
 full_patient_info_path = '/Users/ljohnston1/UCSF DBS for Pain Dropbox/PainNeuromodulationLab/DATA ANALYSIS/Lucy/BenAlter_Collab_Data/KneeNIRS data/kneeNIRS dataset from MMtrimmedcsv250107.xlsx'
 full_patient_info = pd.read_excel(full_patient_info_path)
 
