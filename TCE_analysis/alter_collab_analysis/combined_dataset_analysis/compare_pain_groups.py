@@ -9,11 +9,11 @@ import seaborn as sns
 import statsmodels.formula.api as smf
 from statsmodels.stats.multitest import multipletests
 
-FIGPATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures'
+FIGPATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/cross-dataset_comparisons/pains'
 base_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data'
 sql_path = f'{base_path}/combined_data.sqlite'
 
-datasets = ['kneeOA', 'cLBP']
+datasets = ['kneeOA', 'cLBP'] # add sEEG as soon as possible
 combined = []
 
 for dataset in datasets:
@@ -45,7 +45,7 @@ conn = sqlite3.connect(sql_path)
 kneeoa_groups = pd.read_sql_query("""
 SELECT DISTINCT
     subject,
-    COALESCE(NULLIF("group", ""), 'control') AS group_label
+    "group" AS group_label
 FROM metadata
 WHERE study = 'kneeOA'
 ORDER BY subject
@@ -55,12 +55,12 @@ conn.close()
 kneeoa_groups['subject'] += 1000
 kneeoa_groups['dataset'] = 'kneeOA'
 
-# Get cLBP group labels (all High)
+# Get cLBP group labels
 conn = sqlite3.connect(sql_path)
 clbp_groups = pd.read_sql_query("""
 SELECT DISTINCT
     subject,
-    COALESCE(NULLIF("group", ''), 'High') AS group_label
+    "group" AS group_label
 FROM metadata
 WHERE study LIKE 'cLBP%'
 ORDER BY subject
@@ -93,8 +93,6 @@ df = all_trial_metrics[all_trial_metrics['group_label'].isin(['High', 'Low'])].c
 # Create pain_group_source column: combines dataset + group_label
 df['pain_group_source'] = df['dataset'] + '_' + df['group_label']
 
-print("\n=== PAIN GROUP SOURCES ===")
-print(df['pain_group_source'].value_counts())
 print(f"\nSubjects per group:")
 print(df.groupby('pain_group_source')['subject'].nunique())
 
@@ -124,9 +122,9 @@ for new_col, source_col in {
 contrast_df = df[df['trial_type'].isin(['onset', 'offset'])].copy()
 
 # Load trajectory classifications
-trajectory_df = pd.read_csv(f'{base_path}/holdslope_classifications.csv')
+classification_df = pd.read_csv(f'{base_path}/holdslope_classifications.csv')
 df = df.merge(
-    trajectory_df[['subject', 'classification']],
+    classification_df[['subject', 'classification']],
     on='subject',
     how='left'
 )
@@ -150,7 +148,7 @@ print("\n" + "="*60)
 print("LME: ONSET TRIALS BY PAIN GROUP SOURCE")
 print("="*60)
 
-onset_df = contrast_df[contrast_df['trial_type'] == 'onset'].copy()
+onset_df = contrast_df[contrast_df['trial_type'] == 'onset'].copy().dropna(subset=['abs_normalized_pain_change', 'pain_group_source', 'subject']).reset_index(drop=True)
 
 model_onset = smf.mixedlm(
     "abs_normalized_pain_change ~ C(pain_group_source)",
@@ -166,7 +164,7 @@ print("\n" + "="*60)
 print("LME: OFFSET TRIALS BY PAIN GROUP SOURCE")
 print("="*60)
 
-offset_df = contrast_df[contrast_df['trial_type'] == 'offset'].copy()
+offset_df = contrast_df[contrast_df['trial_type'] == 'offset'].copy().dropna(subset=['abs_normalized_pain_change', 'pain_group_source', 'subject']).reset_index(drop=True)
 
 model_offset = smf.mixedlm(
     "abs_normalized_pain_change ~ C(pain_group_source)",
@@ -512,5 +510,427 @@ plt.savefig(
     bbox_inches='tight'
 )
 plt.show()
+# If significant, follow up with post-hoc tests 
+if p < 0.05:
+    from itertools import combinations
+    from statsmodels.stats.multitest import multipletests
 
+    pairs = list(combinations(group_order, 2))
+    raw_p = []
+    pair_results = []
+
+    for g1, g2 in pairs:
+        # Pull just those two columns from the contingency table
+        sub_table = contingency_table[[g1, g2]]
+        # Drop rows where both are 0 (avoids degenerate chi2)
+        sub_table = sub_table[sub_table.sum(axis=1) > 0]
+        chi2_pair, p_pair, _, _ = stats.chi2_contingency(sub_table)
+        raw_p.append(p_pair)
+        pair_results.append((g1, g2, chi2_pair, p_pair))
+
+    reject, p_fdr, _, _ = multipletests(raw_p, alpha=0.05, method='fdr_bh')
+
+    print("\nPairwise Chi-Squared Post-Hoc (FDR corrected):")
+    for (g1, g2, chi2_pair, p_raw), keep, p_corr in zip(pair_results, reject, p_fdr):
+        sig = '***' if p_corr < 0.001 else '**' if p_corr < 0.01 else '*' if p_corr < 0.05 else 'ns'
+        print(f"  {g1} vs {g2}: chi2={chi2_pair:.3f}, p_raw={p_raw:.4f}, p_FDR={p_corr:.4f} {sig}")
+#%% Systematic dataset comparison - basic statistics
+from scipy.stats import mannwhitneyu, kruskal
+
+SOURCE_COL = 'pain_group_source'
+COLORS = PAIN_GROUP_COLORS
+all_trial_types = ['onset', 'offset', 't1_hold', 't2_hold']
+# cross-dataset same-pain-level pairs for systematic dataset effect
+_cross_pairs = [('kneeOA_High', 'cLBP_High'), ('kneeOA_Low', 'cLBP_Low')]
+# positions in group_order: kneeOA_Low=0, kneeOA_High=1, cLBP_Low=2, cLBP_High=3
+_cross_pair_xpos = [(1, 3), (0, 2)]
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+def _sig_bracket_pg(ax, x0, x1, y_top, p, h=None):
+    h = (abs(y_top) * 0.06 + 2) if h is None else h
+    star = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else None
+    if star:
+        ax.plot([x0, x0, x1, x1], [y_top + h*0.2, y_top + h, y_top + h, y_top + h*0.2],
+                'k-', lw=1.2)
+        ax.text((x0+x1)/2, y_top + h*1.3, star, ha='center', va='bottom',
+                fontsize=11, fontweight='bold')
+
+def _sig_text_pg(ax, p, x=0.5, y=0.97):
+    star = '***' if p < 0.001 else f'p={p:.3f} **' if p < 0.01 else f'p={p:.3f} *' if p < 0.05 else None
+    if star:
+        ax.text(x, y, star, transform=ax.transAxes, ha='center', va='top',
+                fontsize=9, fontweight='bold',
+                bbox=dict(boxstyle='round,pad=0.2', facecolor='lightyellow', alpha=0.8))
+
+def _get_curves_pg(ts_df, trial_type, subject_ids, time_grid, col='pain', t2_temps=None):
+    subset = ts_df[(ts_df['trial_type'] == trial_type) & (ts_df['subject'].isin(subject_ids))]
+    curves = []
+    for (subj, _), grp in subset.groupby(['subject', 'trial_num']):
+        grp = grp.sort_values('aligned_time')
+        t = grp['aligned_time'].values
+        v = pd.to_numeric(grp[col], errors='coerce').values
+        valid = ~np.isnan(v)
+        if valid.sum() < 5:
+            continue
+        interp = np.interp(time_grid, t[valid], v[valid])
+        if t2_temps is not None:
+            t2 = t2_temps.get(int(subj))
+            if t2 is None:
+                continue
+            interp = interp - t2
+        curves.append(interp)
+    if not curves:
+        return None, None, 0
+    arr = np.array(curves)
+    return np.mean(arr, axis=0), np.std(arr, axis=0, ddof=1) / np.sqrt(len(curves)), len(curves)
+
+# ── load time series data ─────────────────────────────────────────────────────
+_ts_parts_pg = []
+for _ds, _id_offset in [('kneeOA', 1000), ('cLBP', 2000)]:
+    with open(f'{base_path}/{_ds}_trial_data_cleaned_aligned.json') as _f:
+        _tdf = pd.DataFrame(json.load(_f))
+    _tdf['subject'] = _tdf['subject'].astype(int) + _id_offset
+    _tdf['dataset'] = _ds
+    # Shift cLBP forward 5s to align with kneeOA (different recording start reference)
+    if _ds == 'cLBP':
+        _tdf['aligned_time'] = _tdf['aligned_time'] + 4.5
+    _ts_parts_pg.append(_tdf)
+ts_all_pg = pd.concat(_ts_parts_pg, ignore_index=True)
+ts_all_pg['pain'] = pd.to_numeric(ts_all_pg['pain'], errors='coerce')
+ts_all_pg['temperature'] = pd.to_numeric(ts_all_pg['temperature'], errors='coerce')
+
+_t2_temps_pg = {}
+for _s in ts_all_pg['subject'].unique():
+    _t = ts_all_pg[(ts_all_pg['subject'] == _s) & (ts_all_pg['trial_type'] == 'offset')]['temperature'].dropna()
+    if not _t.empty:
+        _t2_temps_pg[int(_s)] = float(_t.max())
+
+_time_grid_pg = np.arange(10, 40, 0.1)
+
+_TS_COLORS_PG = {
+    ('offset', 'kneeOA_High'): '#8B0000',
+    ('offset', 'kneeOA_Low'): '#CD5C5C',
+    ('offset', 'cLBP_High'): '#DC143C',
+    ('offset', 'cLBP_Low'): '#FFB6C1',
+    ('t1_hold', 'kneeOA_High'): '#00008B',
+    ('t1_hold', 'kneeOA_Low'): '#4169E1',
+    ('t1_hold', 'cLBP_High'): '#1E90FF',
+    ('t1_hold', 'cLBP_Low'): '#87CEEB',
+    ('onset', 'kneeOA_High'): '#006400',
+    ('onset', 'kneeOA_Low'): '#228B22',
+    ('onset', 'cLBP_High'): '#32CD32',
+    ('onset', 'cLBP_Low'): '#90EE90',
+    ('t2_hold', 'kneeOA_High'): '#8B4513',
+    ('t2_hold', 'kneeOA_Low'): '#D2691E',
+    ('t2_hold', 'cLBP_High'): '#CD853F',
+    ('t2_hold', 'cLBP_Low'): '#DEB887',
+}
+
+# ── 1. Time series: pain + temp curves ───────────────────────────────────────
+for hold_type, stepped_type in [('t1_hold', 'offset'), ('t2_hold', 'onset')]:
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True,
+                              gridspec_kw={'height_ratios': [1, 3]})
+    for trial_type in [hold_type, stepped_type]:
+        for source in group_order:
+            subj_ids = df[df[SOURCE_COL] == source]['subject'].unique()
+            color = _TS_COLORS_PG.get((trial_type, source), 'gray')
+            from scipy.ndimage import gaussian_filter1d
+            mt, st, nt = _get_curves_pg(ts_all_pg, trial_type, subj_ids, _time_grid_pg, 'temperature', _t2_temps_pg)
+            if mt is not None:
+                mt_s = gaussian_filter1d(mt, sigma=5)
+                axes[0].plot(_time_grid_pg, mt_s, color=color, lw=2, label=f'{trial_type} ({source}, n={nt})')
+                axes[0].fill_between(_time_grid_pg, mt_s - st, mt_s + st, color=color, alpha=0.15)
+            mp, sp, np_ = _get_curves_pg(ts_all_pg, trial_type, subj_ids, _time_grid_pg, 'pain')
+            if mp is not None:
+                mp_s = gaussian_filter1d(mp, sigma=5)
+                axes[1].plot(_time_grid_pg, mp_s, color=color, lw=2, label=f'{trial_type} ({source}, n={np_})')
+                axes[1].fill_between(_time_grid_pg, mp_s - 1.96*sp, mp_s + 1.96*sp, color=color, alpha=0.15)
+
+    axes[0].set_ylabel('Temp. rel. to T2 (°C)', fontsize=11)
+    axes[0].set_ylim(-2, 1)
+    axes[0].legend(fontsize=7, loc='lower right', ncol=2)
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_title(f'{hold_type} vs {stepped_type}: Temperature', fontsize=12, fontweight='bold')
+    axes[1].set_xlabel('Aligned Time (s)', fontsize=11)
+    axes[1].set_ylabel('Pain Rating', fontsize=11)
+    axes[1].set_xlim(10, 40)
+    axes[1].set_ylim(0, 80)
+    axes[1].legend(fontsize=7, ncol=2)
+    axes[1].grid(True, alpha=0.3)
+    axes[1].set_title(f'{hold_type} vs {stepped_type}: Pain', fontsize=12, fontweight='bold')
+    plt.suptitle(f'Cross-Dataset: {hold_type} vs {stepped_type}', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(f'{FIGPATH}/pain_groups_timeseries_{hold_type}_vs_{stepped_type}.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+# ── 2. AUC Total distributions + significance ─────────────────────────────────
+fig, axes = plt.subplots(1, len(all_trial_types), figsize=(20, 5), sharey=True)
+for ax_idx, trial_type in enumerate(all_trial_types):
+    ax = axes[ax_idx]
+    subset = df[df['trial_type'] == trial_type]
+    sns.histplot(data=subset, x='auc_total', hue=SOURCE_COL,
+                 palette=COLORS, multiple='layer', bins=25, kde=True, alpha=0.5, ax=ax)
+    ax.set_title(trial_type.title())
+    ax.set_xlabel('AUC Total')
+    if ax_idx > 0:
+        ax.set_ylabel('')
+    grp = [subset[subset[SOURCE_COL] == s]['auc_total'].dropna() for s in group_order if len(subset[subset[SOURCE_COL] == s]) > 3]
+    if len(grp) >= 2:
+        _, p = kruskal(*grp)
+        _sig_text_pg(ax, p)
+plt.suptitle('AUC Total Distribution by Pain Group Source', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_auc_total.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ── 3. Abs Max Val distributions + significance ───────────────────────────────
+fig, axes = plt.subplots(1, len(all_trial_types), figsize=(20, 5), sharey=True)
+for ax_idx, trial_type in enumerate(all_trial_types):
+    ax = axes[ax_idx]
+    subset = df[df['trial_type'] == trial_type]
+    sns.histplot(data=subset, x='abs_max_val', hue=SOURCE_COL,
+                 palette=COLORS, multiple='layer', bins=25, kde=True, alpha=0.5, ax=ax)
+    ax.set_title(trial_type.title())
+    ax.set_xlabel('Absolute Max Value')
+    if ax_idx > 0:
+        ax.set_ylabel('')
+    grp = [subset[subset[SOURCE_COL] == s]['abs_max_val'].dropna() for s in group_order if len(subset[subset[SOURCE_COL] == s]) > 3]
+    if len(grp) >= 2:
+        _, p = kruskal(*grp)
+        _sig_text_pg(ax, p)
+plt.suptitle('Absolute Max Value Distribution by Pain Group Source', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_abs_max_val.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ── 4. AUC Total vs Abs Max Val scatter ───────────────────────────────────────
+plt.figure(figsize=(10, 7))
+for source in group_order:
+    subset = df[df[SOURCE_COL] == source].dropna(subset=['auc_total', 'abs_max_val'])
+    plt.scatter(subset['auc_total'], subset['abs_max_val'],
+                color=COLORS[source], alpha=0.4, label=source, s=30)
+plt.xlabel('AUC Total')
+plt.ylabel('Absolute Max Value')
+plt.title('AUC Total vs Absolute Max Value by Pain Group Source')
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_auc_vs_maxval.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ── 5. Time-yoked normalized pain change: hold vs stepped ─────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
+for ax_idx, (hold_type, stepped_type) in enumerate([('t1_hold', 'offset'), ('t2_hold', 'onset')]):
+    ax = axes[ax_idx]
+    records = []
+    for source in group_order:
+        src_df = df[df[SOURCE_COL] == source]
+        hold = src_df[src_df['trial_type'] == hold_type][['subject', 'time_yoked_normalized_pain_change']].copy()
+        hold['category'] = f'{hold_type}\n(time-yoked)'
+        hold['value'] = hold['time_yoked_normalized_pain_change']
+        hold[SOURCE_COL] = source
+        stepped = src_df[src_df['trial_type'] == stepped_type][['subject', 'abs_normalized_pain_change']].copy()
+        stepped['category'] = stepped_type
+        stepped['value'] = stepped['abs_normalized_pain_change']
+        stepped[SOURCE_COL] = source
+        records += [hold[['subject', 'category', 'value', SOURCE_COL]],
+                    stepped[['subject', 'category', 'value', SOURCE_COL]]]
+    plot_df = pd.concat(records, ignore_index=True).dropna(subset=['value'])
+    x_order = [f'{hold_type}\n(time-yoked)', stepped_type]
+    sns.violinplot(data=plot_df, x='category', y='value', hue=SOURCE_COL,
+                   palette=COLORS, inner='box', order=x_order, hue_order=group_order, ax=ax)
+    # Paired t-test within each pain group source
+    y_ann = plot_df['value'].quantile(0.97)
+    for s_idx, source in enumerate(group_order):
+        h_means = plot_df[(plot_df[SOURCE_COL] == source) & (plot_df['category'] == x_order[0])].groupby('subject')['value'].mean()
+        s_means = plot_df[(plot_df[SOURCE_COL] == source) & (plot_df['category'] == x_order[1])].groupby('subject')['value'].mean()
+        common = h_means.index.intersection(s_means.index)
+        if len(common) > 3:
+            _, p = stats.ttest_rel(h_means[common], s_means[common])
+            dodge = 0.8 / len(group_order)
+            x_off = -0.4 + dodge * (s_idx + 0.5)
+            y_line = y_ann + s_idx * 6
+            ax.plot([x_off, 1 + x_off], [y_line, y_line], '-', color=COLORS[source], lw=1.2)
+            sig = '***' if p < 0.001 else f'**' if p < 0.01 else f'*' if p < 0.05 else 'ns'
+            ax.text(0.5 + x_off, y_line + 0.5, sig, ha='center', fontsize=7,
+                    fontweight='bold', color=COLORS[source])
+    ax.set_title(f'{hold_type} vs {stepped_type}', fontweight='bold')
+    ax.set_xlabel('')
+    ax.set_ylabel('Normalized Pain Change (%)' if ax_idx == 0 else '')
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylim(-200, 200)
+plt.suptitle('Time-Yoked (Hold) vs Absolute (Stepped) Normalized Pain Change by Pain Group',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_timeyoked_vs_abs_pain_change.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ── 6. Abs normalized pain change: hold vs stepped ────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
+for ax_idx, (hold_type, stepped_type) in enumerate([('t1_hold', 'offset'), ('t2_hold', 'onset')]):
+    ax = axes[ax_idx]
+    records = []
+    for source in group_order:
+        src_df = df[df[SOURCE_COL] == source]
+        for tt in [hold_type, stepped_type]:
+            d = src_df[src_df['trial_type'] == tt][['subject', 'abs_normalized_pain_change']].copy()
+            d['category'] = tt
+            d['value'] = d['abs_normalized_pain_change']
+            d[SOURCE_COL] = source
+            records.append(d[['subject', 'category', 'value', SOURCE_COL]])
+    plot_df = pd.concat(records, ignore_index=True).dropna(subset=['value'])
+    x_order = [hold_type, stepped_type]
+    sns.violinplot(data=plot_df, x='category', y='value', hue=SOURCE_COL,
+                   palette=COLORS, inner='box', order=x_order, hue_order=group_order, ax=ax)
+    y_ann = plot_df['value'].quantile(0.97)
+    for s_idx, source in enumerate(group_order):
+        h_means = plot_df[(plot_df[SOURCE_COL] == source) & (plot_df['category'] == x_order[0])].groupby('subject')['value'].mean()
+        s_means = plot_df[(plot_df[SOURCE_COL] == source) & (plot_df['category'] == x_order[1])].groupby('subject')['value'].mean()
+        common = h_means.index.intersection(s_means.index)
+        if len(common) > 3:
+            _, p = stats.ttest_rel(h_means[common], s_means[common])
+            dodge = 0.8 / len(group_order)
+            x_off = -0.4 + dodge * (s_idx + 0.5)
+            y_line = y_ann + s_idx * 6
+            ax.plot([x_off, 1 + x_off], [y_line, y_line], '-', color=COLORS[source], lw=1.2)
+            sig = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+            ax.text(0.5 + x_off, y_line + 0.5, sig, ha='center', fontsize=7,
+                    fontweight='bold', color=COLORS[source])
+    ax.set_title(f'{hold_type} vs {stepped_type}: Abs Pain Change', fontweight='bold')
+    ax.set_xlabel('')
+    ax.set_ylabel('Normalized Pain Change (%)' if ax_idx == 0 else '')
+    ax.grid(True, alpha=0.3, axis='y')
+plt.suptitle('Absolute Normalized Pain Change: Hold vs Stepped by Pain Group',
+             fontsize=13, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_abs_pain_change_hold_vs_stepped.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ── 7. Normalized pain change violins (all trial types) + significance ─────────
+# Significance: Kruskal-Wallis overall; brackets for cross-dataset same-pain-level pairs
+fig, axes = plt.subplots(1, len(all_trial_types), figsize=(20, 6))
+for ax_idx, trial_type in enumerate(all_trial_types):
+    ax = axes[ax_idx]
+    subset = df[df['trial_type'] == trial_type].dropna(subset=['abs_normalized_pain_change'])
+    sns.violinplot(data=subset, x=SOURCE_COL, y='abs_normalized_pain_change',
+                   palette=COLORS, inner='box', order=group_order, ax=ax)
+    ax.set_title(trial_type.title())
+    ax.set_xlabel('')
+    ax.set_ylabel('Normalized Pain Change (%)' if ax_idx == 0 else '')
+    ax.tick_params(axis='x', rotation=45)
+    y_top = subset['abs_normalized_pain_change'].quantile(0.97)
+    for (g1, g2), (x1, x2) in zip(_cross_pairs, _cross_pair_xpos):
+        d1 = subset[subset[SOURCE_COL] == g1]['abs_normalized_pain_change'].dropna()
+        d2 = subset[subset[SOURCE_COL] == g2]['abs_normalized_pain_change'].dropna()
+        if len(d1) > 3 and len(d2) > 3:
+            _, p = mannwhitneyu(d1, d2, alternative='two-sided')
+            _sig_bracket_pg(ax, x1, x2, y_top, p)
+            y_top = y_top + abs(y_top) * 0.12 + 8
+plt.suptitle('Normalized Pain Change by Trial Type and Pain Group Source', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_normalized_pain_change.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ── 8. Latency to max pain (all trial types) + significance ───────────────────
+fig, axes = plt.subplots(1, len(all_trial_types), figsize=(20, 6))
+for ax_idx, trial_type in enumerate(all_trial_types):
+    ax = axes[ax_idx]
+    subset = df[df['trial_type'] == trial_type].dropna(subset=['abs_max_time'])
+    sns.violinplot(data=subset, x=SOURCE_COL, y='abs_max_time',
+                   palette=COLORS, inner='box', order=group_order, ax=ax)
+    ax.set_title(trial_type.title())
+    ax.set_xlabel('')
+    ax.set_ylabel('Latency to Max Pain (s)' if ax_idx == 0 else '')
+    ax.tick_params(axis='x', rotation=45)
+    y_top = subset['abs_max_time'].quantile(0.97)
+    for (g1, g2), (x1, x2) in zip(_cross_pairs, _cross_pair_xpos):
+        d1 = subset[subset[SOURCE_COL] == g1]['abs_max_time'].dropna()
+        d2 = subset[subset[SOURCE_COL] == g2]['abs_max_time'].dropna()
+        if len(d1) > 3 and len(d2) > 3:
+            _, p = mannwhitneyu(d1, d2, alternative='two-sided')
+            _sig_bracket_pg(ax, x1, x2, y_top, p)
+            y_top = y_top + abs(y_top) * 0.12 + 3
+plt.suptitle('Latency to Max Pain by Trial Type and Pain Group Source', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_latency.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ── 9. Peak-to-peak (onset and offset) + significance ─────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+for ax_idx, trial_type in enumerate(['onset', 'offset']):
+    ax = axes[ax_idx]
+    subset = df[df['trial_type'] == trial_type].dropna(subset=['abs_peak_to_peak'])
+    sns.violinplot(data=subset, x=SOURCE_COL, y='abs_peak_to_peak',
+                   palette=COLORS, inner='box', order=group_order, ax=ax)
+    ax.set_title(f'{trial_type.title()} Trials')
+    ax.set_xlabel('')
+    ax.set_ylabel('Abs Peak-to-Peak' if ax_idx == 0 else '')
+    ax.tick_params(axis='x', rotation=45)
+    y_top = subset['abs_peak_to_peak'].quantile(0.97)
+    for (g1, g2), (x1, x2) in zip(_cross_pairs, _cross_pair_xpos):
+        d1 = subset[subset[SOURCE_COL] == g1]['abs_peak_to_peak'].dropna()
+        d2 = subset[subset[SOURCE_COL] == g2]['abs_peak_to_peak'].dropna()
+        if len(d1) > 3 and len(d2) > 3:
+            _, p = mannwhitneyu(d1, d2, alternative='two-sided')
+            _sig_bracket_pg(ax, x1, x2, y_top, p)
+            y_top = y_top + abs(y_top) * 0.12 + 3
+plt.suptitle('Peak-to-Peak by Pain Group Source', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_peak_to_peak.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ── 10. Hold trial normalized pain change + significance ──────────────────────
+hold_df = df[df['trial_type'].isin(['t1_hold', 't2_hold'])].dropna(subset=['abs_normalized_pain_change'])
+fig, ax = plt.subplots(figsize=(12, 6))
+sns.violinplot(data=hold_df, x='trial_type', y='abs_normalized_pain_change',
+               hue=SOURCE_COL, palette=COLORS, hue_order=group_order, inner='box', ax=ax)
+ax.set_xlabel('Trial Type')
+ax.set_ylabel('Normalized Pain Change (%)')
+ax.set_title('Hold Trial Normalized Pain Change by Pain Group Source')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_hold_trials.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ── 11. Onset vs Offset magnitude: subject-level ──────────────────────────────
+onset_subj = (
+    df[df['trial_type'] == 'onset']
+    .groupby(['subject', SOURCE_COL])['abs_normalized_pain_change']
+    .mean().reset_index()
+    .rename(columns={'abs_normalized_pain_change': 'onset_mean'})
+)
+offset_subj = (
+    df[df['trial_type'] == 'offset']
+    .groupby(['subject', SOURCE_COL])['abs_normalized_pain_change']
+    .mean().reset_index()
+    .rename(columns={'abs_normalized_pain_change': 'offset_mean'})
+)
+prop_df = onset_subj.merge(offset_subj[['subject', 'offset_mean']], on='subject').dropna()
+prop_df['onset_abs'] = prop_df['onset_mean'].abs()
+prop_df['offset_abs'] = prop_df['offset_mean'].abs()
+
+plt.figure(figsize=(8, 7))
+for source in group_order:
+    subset = prop_df[prop_df[SOURCE_COL] == source]
+    if subset.empty:
+        continue
+    plt.scatter(subset['offset_abs'], subset['onset_abs'],
+                color=COLORS[source], alpha=0.7, label=source,
+                s=60, edgecolors='black', linewidth=0.5)
+    if len(subset) > 3:
+        r, p = stats.pearsonr(subset['offset_abs'], subset['onset_abs'])
+        slope, intercept, *_ = stats.linregress(subset['offset_abs'], subset['onset_abs'])
+        x_range = np.linspace(subset['offset_abs'].min(), subset['offset_abs'].max(), 100)
+        plt.plot(x_range, slope * x_range + intercept, color=COLORS[source],
+                 linestyle='--', lw=1.5, label=f'{source}: r={r:.2f}, p={p:.3f}')
+
+lim = max(prop_df['onset_abs'].max(), prop_df['offset_abs'].max()) * 1.05
+plt.plot([0, lim], [0, lim], 'k:', alpha=0.4, label='y=x')
+plt.xlabel('|Offset Mean Normalized Pain Change| (%)')
+plt.ylabel('|Onset Mean Normalized Pain Change| (%)')
+plt.title('Onset vs Offset Magnitude: Subject-Level by Pain Group Source')
+plt.legend(fontsize=8)
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_onset_offset_magnitude.png', dpi=300, bbox_inches='tight')
+plt.show()
 # %%

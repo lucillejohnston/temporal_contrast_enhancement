@@ -41,6 +41,7 @@ import matplotlib.pyplot as plt
 pts = ['RCS08',
        'RCS09',
        'PR08'] 
+
 # Loop through each patient and load in the data:
 for pt in pts:
     if pt.startswith('RCS'):
@@ -52,3 +53,4 @@ for pt in pts:
     import glob
     csv_file = glob.glob(f'{path}{pt}*_all_events.csv')[0]
     events_df = pd.read_csv(csv_file)
+
