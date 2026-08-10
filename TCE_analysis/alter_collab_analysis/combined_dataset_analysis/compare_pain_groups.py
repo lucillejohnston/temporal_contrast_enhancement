@@ -133,15 +133,50 @@ print("\nData preparation complete!")
 print(f"Total trials: {len(df)}")
 print(f"Total subjects: {df['subject'].nunique()}")
 
-#%% Are there differences in OA and OH across pain group sources?
+#%% Descriptive summary: how many trials/subjects exist per trial type & pain group source
+_summary_counts_pg = df.groupby(['trial_type', 'pain_group_source']).agg(
+    n_trials=('subject', 'count'),
+    n_subjects=('subject', 'nunique')
+).reset_index()
 
-# Define colors for each pain group source
+_trial_type_order_pg = ['onset', 'offset', 't1_hold', 't2_hold']
+_group_order_pg = ['kneeOA_Low', 'kneeOA_High', 'cLBP_Low', 'cLBP_High']
 PAIN_GROUP_COLORS = {
     'kneeOA_High': '#8B0000',    # Dark red
     'kneeOA_Low': '#FFA500',     # Orange
     'cLBP_High': '#DC143C',      # Crimson
     'cLBP_Low': '#FF8C00'        # Dark orange
 }
+
+fig, ax = plt.subplots(figsize=(12, 6))
+sns.barplot(
+    data=_summary_counts_pg,
+    x='trial_type',
+    y='n_trials',
+    hue='pain_group_source',
+    palette=PAIN_GROUP_COLORS,
+    order=_trial_type_order_pg,
+    hue_order=_group_order_pg,
+    ax=ax
+)
+
+for source, container in zip(_group_order_pg, ax.containers):
+    labels = []
+    for tt in _trial_type_order_pg:
+        row = _summary_counts_pg[(_summary_counts_pg['trial_type'] == tt) & (_summary_counts_pg['pain_group_source'] == source)]
+        labels.append(f"n subj={int(row['n_subjects'].iloc[0])}" if not row.empty else '')
+    ax.bar_label(container, labels=labels, fontsize=7, fontweight='bold', padding=2, rotation=90)
+
+ax.set_xlabel('Trial Type', fontsize=12, fontweight='bold')
+ax.set_ylabel('Number of Trials', fontsize=12, fontweight='bold')
+ax.set_title('Data Available for Comparison: Trials per Trial Type (bar labels = n subjects)',
+             fontsize=13, fontweight='bold')
+ax.legend(title='Pain Group Source')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/data_summary_trial_subject_counts.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+#%% Are there differences in OA and OH across pain group sources?
 
 # LME of onset trials 
 print("\n" + "="*60)
@@ -195,30 +230,6 @@ for ax_idx, trial_type in enumerate(trial_order):
         order=group_order,
         ax=ax
     )
-    
-    # Add sample sizes
-    summary_stats = trial_data.groupby('pain_group_source').agg(
-        n_trials=('abs_normalized_pain_change', 'count'),
-        n_subjects=('subject', 'nunique'),
-        mean=('abs_normalized_pain_change', 'mean')
-    ).reindex(group_order)
-    
-    y_min, y_max = ax.get_ylim()
-    y_span = y_max - y_min
-    
-    for i, group in enumerate(group_order):
-        if group in summary_stats.index:
-            stats_row = summary_stats.loc[group]
-            ax.text(
-                x=i,
-                y=y_min + 0.03 * y_span,
-                s=f"n subj = {int(stats_row['n_subjects'])}\n"
-                  f"n trials = {int(stats_row['n_trials'])}",
-                ha='center',
-                fontsize=9,
-                fontweight='bold',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
-            )
     
     ax.set_title(f'{trial_type.title()} Trials', fontsize=13, fontweight='bold')
     ax.set_xlabel('Pain Group Source', fontsize=11, fontweight='bold')
@@ -346,7 +357,7 @@ for idx, (trial_type, preceding_metric, direction, metric_label) in enumerate(an
                     group_data['abs_normalized_pain_change'],
                     color=PAIN_GROUP_COLORS[source],
                     alpha=0.6,
-                    label=f'{source} (n={len(group_data)})',
+                    label=f'{source}',
                     s=50,
                     edgecolors='black',
                     linewidth=0.5
@@ -562,6 +573,27 @@ def _sig_text_pg(ax, p, x=0.5, y=0.97):
                 fontsize=9, fontweight='bold',
                 bbox=dict(boxstyle='round,pad=0.2', facecolor='lightyellow', alpha=0.8))
 
+def _posthoc_pairwise_pg(ax, subset, col, group_order, trial_type, metric_name, x=0.98, y=0.97):
+    from itertools import combinations
+    groups = {s: subset[subset[SOURCE_COL] == s][col].dropna() for s in group_order}
+    groups = {s: v for s, v in groups.items() if len(v) > 3}
+    pairs = list(combinations(groups.keys(), 2))
+    if len(pairs) < 1:
+        return
+    raw_p = [mannwhitneyu(groups[g1], groups[g2], alternative='two-sided').pvalue for g1, g2 in pairs]
+    reject, p_fdr, _, _ = multipletests(raw_p, alpha=0.05, method='fdr_bh')
+    print(f"\n{metric_name} - {trial_type} pairwise Mann-Whitney (FDR corrected):")
+    sig_lines = []
+    for (g1, g2), keep, p_raw, p_corr in zip(pairs, reject, raw_p, p_fdr):
+        sig = '***' if p_corr < 0.001 else '**' if p_corr < 0.01 else '*' if p_corr < 0.05 else 'ns'
+        print(f"  {g1} vs {g2}: p_raw={p_raw:.4f}, p_FDR={p_corr:.4f} {sig}")
+        if keep:
+            sig_lines.append(f'{g1} vs {g2}: {sig}')
+    if sig_lines:
+        ax.text(x, y, '\n'.join(sig_lines), transform=ax.transAxes, ha='right', va='top',
+                fontsize=6, fontweight='bold',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow', alpha=0.85))
+
 def _get_curves_pg(ts_df, trial_type, subject_ids, time_grid, col='pain', t2_temps=None):
     subset = ts_df[(ts_df['trial_type'] == trial_type) & (ts_df['subject'].isin(subject_ids))]
     curves = []
@@ -638,12 +670,12 @@ for hold_type, stepped_type in [('t1_hold', 'offset'), ('t2_hold', 'onset')]:
             mt, st, nt = _get_curves_pg(ts_all_pg, trial_type, subj_ids, _time_grid_pg, 'temperature', _t2_temps_pg)
             if mt is not None:
                 mt_s = gaussian_filter1d(mt, sigma=5)
-                axes[0].plot(_time_grid_pg, mt_s, color=color, lw=2, label=f'{trial_type} ({source}, n={nt})')
+                axes[0].plot(_time_grid_pg, mt_s, color=color, lw=2, label=f'{trial_type} ({source})')
                 axes[0].fill_between(_time_grid_pg, mt_s - st, mt_s + st, color=color, alpha=0.15)
             mp, sp, np_ = _get_curves_pg(ts_all_pg, trial_type, subj_ids, _time_grid_pg, 'pain')
             if mp is not None:
                 mp_s = gaussian_filter1d(mp, sigma=5)
-                axes[1].plot(_time_grid_pg, mp_s, color=color, lw=2, label=f'{trial_type} ({source}, n={np_})')
+                axes[1].plot(_time_grid_pg, mp_s, color=color, lw=2, label=f'{trial_type} ({source})')
                 axes[1].fill_between(_time_grid_pg, mp_s - 1.96*sp, mp_s + 1.96*sp, color=color, alpha=0.15)
 
     axes[0].set_ylabel('Temp. rel. to T2 (°C)', fontsize=11)
@@ -678,6 +710,7 @@ for ax_idx, trial_type in enumerate(all_trial_types):
     if len(grp) >= 2:
         _, p = kruskal(*grp)
         _sig_text_pg(ax, p)
+        _posthoc_pairwise_pg(ax, subset, 'auc_total', group_order, trial_type, 'AUC Total')
 plt.suptitle('AUC Total Distribution by Pain Group Source', fontsize=14, fontweight='bold')
 plt.tight_layout()
 plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_auc_total.png', dpi=300, bbox_inches='tight')
@@ -698,6 +731,7 @@ for ax_idx, trial_type in enumerate(all_trial_types):
     if len(grp) >= 2:
         _, p = kruskal(*grp)
         _sig_text_pg(ax, p)
+        _posthoc_pairwise_pg(ax, subset, 'abs_max_val', group_order, trial_type, 'Abs Max Val')
 plt.suptitle('Absolute Max Value Distribution by Pain Group Source', fontsize=14, fontweight='bold')
 plt.tight_layout()
 plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_abs_max_val.png', dpi=300, bbox_inches='tight')

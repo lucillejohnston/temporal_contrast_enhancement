@@ -102,6 +102,46 @@ df = df.merge(
     on='subject',
     how='left'
 )
+#%% Descriptive summary: how many trials/subjects exist per trial type & dataset
+_summary_counts = df.groupby(['trial_type', 'control_dataset']).agg(
+    n_trials=('subject', 'count'),
+    n_subjects=('subject', 'nunique')
+).reset_index()
+
+_trial_type_order = ['onset', 'offset', 't1_hold', 't2_hold']
+_hue_order = ['kneeOA_control', 'plosONE']
+DATASET_COLORS = {
+    'plosONE': 'blue',
+    'kneeOA_control': 'orange'
+}
+
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.barplot(
+    data=_summary_counts,
+    x='trial_type',
+    y='n_trials',
+    hue='control_dataset',
+    palette=DATASET_COLORS,
+    order=_trial_type_order,
+    hue_order=_hue_order,
+    ax=ax
+)
+
+for source, container in zip(_hue_order, ax.containers):
+    labels = []
+    for tt in _trial_type_order:
+        row = _summary_counts[(_summary_counts['trial_type'] == tt) & (_summary_counts['control_dataset'] == source)]
+        labels.append(f"n subj={int(row['n_subjects'].iloc[0])}" if not row.empty else '')
+    ax.bar_label(container, labels=labels, fontsize=8, fontweight='bold', padding=2)
+
+ax.set_xlabel('Trial Type', fontsize=12, fontweight='bold')
+ax.set_ylabel('Number of Trials', fontsize=12, fontweight='bold')
+ax.set_title('Data Available for Comparison: Trials per Trial Type (bar labels = n subjects)',
+             fontsize=13, fontweight='bold')
+ax.legend(title='Study')
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/data_summary_trial_subject_counts.png', dpi=300, bbox_inches='tight')
+plt.show()
 #%% Are there differences in OA and OH across datasets?
 # LME of onset trials 
 onset_df = contrast_df[contrast_df['trial_type'] == 'onset'].copy()
@@ -130,11 +170,6 @@ print("Offset Trials LME Results:")
 print(result_offset.summary())
 
 # Plot with stat annotations
-DATASET_COLORS = {
-    'plosONE': 'blue',
-    'kneeOA_control': 'orange'
-}
-
 plt.figure(figsize=(10, 7))
 trial_order = ['onset', 'offset']
 ax = sns.violinplot(
@@ -146,33 +181,6 @@ ax = sns.violinplot(
     inner='box',
     order=trial_order
 )
-summary_stats = contrast_df.groupby(['trial_type', 'control_dataset']).agg(
-    n_trials=('abs_normalized_pain_change', 'count'),
-    n_subjects=('subject', 'nunique'),
-    mean=('abs_normalized_pain_change', 'mean')
-).reset_index()
-
-# Positions for annotations
-x_positions = {
-    ('onset', 'kneeOA_control'): -0.2,
-    ('onset', 'plosONE'): 0.2,
-    ('offset', 'kneeOA_control'): 0.8,
-    ('offset', 'plosONE'): 1.2
-}
-
-# Add text labels
-for _, row in summary_stats.iterrows():
-    x = x_positions[(row['trial_type'], row['control_dataset'])]
-    plt.text(
-        x=x,
-        y=plt.ylim()[0],
-        s=f"n subj = {row['n_subjects']}\n"
-          f"n trials = {row['n_trials']}",
-        ha='center',
-        fontsize=9,
-        fontweight='bold',
-        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
-    )
 
 # onset stats
 onset_p = result_onset.pvalues['C(control_dataset)[T.plosONE]']
@@ -615,11 +623,11 @@ for hold_type, stepped_type in [('t1_hold', 'offset'), ('t2_hold', 'onset')]:
             color = _TS_COLORS.get((trial_type, source), 'gray')
             mt, st, nt = _get_curves(ts_all, trial_type, subj_ids, _time_grid, 'temperature', _t2_temps)
             if mt is not None:
-                axes[0].plot(_time_grid, mt, color=color, lw=2, label=f'{trial_type} ({source}, n={nt})')
+                axes[0].plot(_time_grid, mt, color=color, lw=2, label=f'{trial_type} ({source})')
                 axes[0].fill_between(_time_grid, mt - st, mt + st, color=color, alpha=0.15)
             mp, sp, np_ = _get_curves(ts_all, trial_type, subj_ids, _time_grid, 'pain')
             if mp is not None:
-                axes[1].plot(_time_grid, mp, color=color, lw=2, label=f'{trial_type} ({source}, n={np_})')
+                axes[1].plot(_time_grid, mp, color=color, lw=2, label=f'{trial_type} ({source})')
                 axes[1].fill_between(_time_grid, mp - 1.96*sp, mp + 1.96*sp, color=color, alpha=0.15)
 
     axes[0].set_ylabel('Temp (°C)', fontsize=11)

@@ -259,7 +259,7 @@ plt.xlabel('Mean (of all hold trials per subject) slope')
 plt.ylabel('Subjects')
 plt.legend()
 ####################################################################################### Plot example subject for each group
-def plot_hold_trials_for_subject(subject_id, hold_metrics_df, time_series_df, title=None, time_window=None):
+def plot_hold_trials_for_subject(subject_id, hold_metrics_df, time_series_df, title=None, time_window=None, savepath=None, ax1=None):
     subject_hold_trials = hold_metrics_df[hold_metrics_df['subject'] == subject_id].copy()
     if subject_hold_trials.empty:
         print(f"No hold trials found for subject {subject_id}")
@@ -281,7 +281,9 @@ def plot_hold_trials_for_subject(subject_id, hold_metrics_df, time_series_df, ti
 
     pain_curves = []
 
-    fig, ax1 = plt.subplots(figsize=(10, 6))
+    standalone = ax1 is None
+    if standalone:
+        fig, ax1 = plt.subplots(figsize=(12, 4))
     ax2 = ax1.twinx()
 
     for trial_num, trial_df in subj_ts.groupby('trial_num'):
@@ -325,8 +327,13 @@ def plot_hold_trials_for_subject(subject_id, hold_metrics_df, time_series_df, ti
     handles1, labels1 = ax1.get_legend_handles_labels()
     ax1.legend(handles1, labels1, loc='best')
 
-    plt.tight_layout()
-    plt.show()
+    if standalone:
+        plt.tight_layout()
+
+        if savepath is not None:
+            plt.savefig(savepath, format='svg', bbox_inches='tight')
+
+        plt.show()
 
 
 hab_subject = slope_classification_df[
