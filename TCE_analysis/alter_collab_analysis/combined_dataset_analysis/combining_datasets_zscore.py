@@ -21,7 +21,7 @@ print("=== LOADING AND COMBINING DATASETS ===")
 datasets = ['kneeOA', 'plosONE', 'cLBP'] # 'sEEG' 
 combined_trial_metrics = []
 combined_trial_data = []
-FIGPATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures'
+FIGPATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/combined_dataset_zscore'
 # load in the data and combine it
 for dataset in datasets:
     print(f"\n--- Loading {dataset} dataset ---")
@@ -144,10 +144,6 @@ overall_dist = all_trial_metrics.groupby('group_label').agg({
 overall_dist.columns = ['n_subjects', 'n_trials']
 print(overall_dist)
 print(f"\nSubject ID overlap fixed and groups consolidated!")
-
-# Save for later
-all_trial_data
-all_trial_metrics
 #%%
 # ==================================================================================================================
 ######################################## 0. COMBINE AND STANDARDIZE THE DATA ########################################
@@ -197,6 +193,33 @@ print(f"Common control trials: {common_control_trials}")
 
 #%%
 # ==================================================================================================================
+######################################## 0b. Z-SCORE METRICS WITHIN DATASET ########################################
+# ==================================================================================================================
+# Z-score numeric metrics within each dataset (kneeOA/plosONE/cLBP) to account for differences
+# in measurement scale/procedure across the combined datasets
+_metrics_to_zscore = [
+    'abs_normalized_pain_change',
+    'preceding_abs_normalized_pain_change',
+    'auc_total',
+    'abs_max_val',
+    'abs_min_val',
+    'abs_max_time',
+    'abs_peak_to_peak',
+    'time_yoked_normalized_pain_change',
+]
+for _metric in _metrics_to_zscore:
+    if _metric not in unified_data.columns:
+        continue
+    _grp_stats = unified_data.groupby('dataset')[_metric].agg(['mean', 'std'])
+    for _grp, _row in _grp_stats.iterrows():
+        _mask = unified_data['dataset'] == _grp
+        if _row['std'] > 0:
+            unified_data.loc[_mask, _metric] = (
+                (unified_data.loc[_mask, _metric] - _row['mean']) / _row['std']
+            )
+
+#%%
+# ==================================================================================================================
 ######################################## 1. BASIC STATS ANALYSIS ########################################
 # ==================================================================================================================
 # Define consistent colors for clinical groups
@@ -209,6 +232,9 @@ GROUP_COLORS = {
 ############################################################################## Raw distributions and group comparisons
 # Plot the raw data to get a sense of the distributions and group differences
 # Create comprehensive comparison plots with violin plots and sample sizes
+from itertools import combinations
+from statsmodels.stats.multitest import multipletests
+
 fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 # Prepare data for plotting
 plot_data = unified_data[unified_data['trial_type'].isin(['onset', 'offset'])].copy()
@@ -218,78 +244,26 @@ def add_sample_sizes(ax, data, x_col, hue_col):
     """Add sample size annotations to violin plot"""
     # Get unique combinations
     combinations = data.groupby([x_col, hue_col]).size().reset_index(name='n')
-    
+
     # Position for text annotations
     x_positions = {trial: i for i, trial in enumerate(data[x_col].unique())}
     hue_positions = {group: i for i, group in enumerate(data[hue_col].unique())}
-    
+
     # Calculate positions for each group
     n_groups = len(data[hue_col].unique())
     width = 0.8 / n_groups
-    
+
     for _, row in combinations.iterrows():
         x_pos = x_positions[row[x_col]]
         hue_idx = hue_positions[row[hue_col]]
-        
+
         # Adjust x position based on group
         adjusted_x = x_pos + (hue_idx - (n_groups-1)/2) * width * 0.8
-        
+
         # Add text at bottom of plot
-        ax.text(adjusted_x, ax.get_ylim()[0] + 0.02 * (ax.get_ylim()[1] - ax.get_ylim()[0]), 
-                f'n={row["n"]}', 
+        ax.text(adjusted_x, ax.get_ylim()[0] + 0.02 * (ax.get_ylim()[1] - ax.get_ylim()[0]),
+                f'n={row["n"]}',
                 ha='center', va='bottom', fontsize=9, fontweight='bold')
-
-# Plot 1: Max pain by group and trial type
-sns.violinplot(data=plot_data, x='trial_type', y='abs_max_val', hue='group_label', palette=GROUP_COLORS, 
-               inner='box', ax=axes[0,0])
-axes[0,0].set_title('Max Pain by Clinical Group and Trial Type')
-axes[0,0].set_ylabel('Max Pain Rating')
-add_sample_sizes(axes[0,0], plot_data, 'trial_type', 'group_label')
-
-# Plot 2: Min pain by group and trial type
-sns.violinplot(data=plot_data, x='trial_type', y='abs_min_val', hue='group_label', palette=GROUP_COLORS,
-               inner='box', ax=axes[0,1])
-axes[0,1].set_title('Min Pain by Clinical Group and Trial Type')
-axes[0,1].set_ylabel('Min Pain Rating')
-add_sample_sizes(axes[0,1], plot_data, 'trial_type', 'group_label')
-
-# Plot 3: AUC by group and trial type
-sns.violinplot(data=plot_data, x='trial_type', y='auc_total', hue='group_label', palette=GROUP_COLORS,
-               inner='box', ax=axes[1,0])
-axes[1,0].set_title('AUC Total by Clinical Group and Trial Type')
-axes[1,0].set_ylabel('AUC Total')
-add_sample_sizes(axes[1,0], plot_data, 'trial_type', 'group_label')
-
-# Plot 4: Normalized pain change by group and trial type  
-sns.violinplot(data=plot_data, x='trial_type', y='abs_normalized_pain_change', hue='group_label', palette=GROUP_COLORS,
-               inner='box', ax=axes[1,1])
-axes[1,1].set_title('Normalized Pain Change by Clinical Group')
-axes[1,1].set_ylabel('Normalized Pain Change (%)')
-add_sample_sizes(axes[1,1], plot_data, 'trial_type', 'group_label')
-
-plt.tight_layout()
-plt.savefig(f'{FIGPATH}/raw_distributions_by_group.png', dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
-plt.show()
-
-# ========================================================
-# Plot OH and OA magnitude by clinical group (subject-averaged)
-# + pairwise Mann-Whitney U tests + FDR correction + significance bars + n subjects
-# ========================================================
-from itertools import combinations
-from statsmodels.stats.multitest import multipletests
-
-subj_avg = (
-    unified_data[unified_data['trial_type'].isin(['onset', 'offset'])]
-    .groupby(['subject', 'group_label', 'trial_type'], as_index=False)['abs_normalized_pain_change']
-    .mean()
-    .rename(columns={'abs_normalized_pain_change': 'mean_abs_normalized_pain_change'})
-)
-
-fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-order = ['Control', 'Low', 'High']
-
-panel_data = {}
-tests_by_panel = {0: [], 1: []}
 
 def p_to_stars(p):
     if p < 0.001:
@@ -305,6 +279,120 @@ def add_sig_bar(ax, x1, x2, y, h, text):
     ax.text((x1 + x2) / 2, y + h, text, ha='center', va='bottom',
             fontsize=11, fontweight='bold', color='black')
 
+def add_hue_group_sig_bars(ax, data, x_col, hue_col, y_col, hue_order, label=None):
+    """
+    Pairwise Mann-Whitney U tests (non-parametric) between hue groups, computed
+    separately within each x_col category, FDR-corrected (BH) across all pairwise
+    tests drawn on this axis, then annotated as significance bars.
+    """
+    x_positions = {x_val: i for i, x_val in enumerate(data[x_col].unique())}
+    n_hue = len(hue_order)
+    width = 0.8 / n_hue
+    hue_positions = {g: i for i, g in enumerate(hue_order)}
+
+    tests = []
+    for x_val in data[x_col].unique():
+        sub = data[data[x_col] == x_val]
+        group_series = {g: sub.loc[sub[hue_col] == g, y_col].dropna() for g in hue_order}
+        present_groups = [g for g in hue_order if len(group_series[g]) > 1]
+        for g1, g2 in combinations(present_groups, 2):
+            u_stat, p_raw = stats.mannwhitneyu(
+                group_series[g1], group_series[g2], alternative='two-sided'
+            )
+            tests.append({'x_val': x_val, 'g1': g1, 'g2': g2, 'u_stat': u_stat, 'p_raw': p_raw})
+
+    if not tests:
+        return tests
+
+    pvals = [t['p_raw'] for t in tests]
+    reject, p_fdr, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
+    for t, rej, pf in zip(tests, reject, p_fdr):
+        t['p_fdr'] = pf
+        t['sig'] = bool(rej)
+
+    print(f"\n--- Mann-Whitney U pairwise tests (FDR corrected) {'- ' + label if label else ''} ---")
+    for t in tests:
+        mark = p_to_stars(t['p_fdr'])
+        print(f"  {t['x_val']} | {t['g1']} vs {t['g2']}: U={t['u_stat']:.1f}, "
+              f"p_raw={t['p_raw']:.4f}, p_FDR={t['p_fdr']:.4f} {mark}")
+
+    sig_tests = [t for t in tests if t['sig']]
+    if sig_tests:
+        y_min, y_max = ax.get_ylim()
+        y_span = max(y_max - y_min, 1e-6)
+        base_y = y_max + 0.04 * y_span
+        step = 0.09 * y_span
+        h = 0.015 * y_span
+
+        for k, t in enumerate(sig_tests):
+            x_base = x_positions[t['x_val']]
+            x1 = x_base + (hue_positions[t['g1']] - (n_hue - 1) / 2) * width * 0.8
+            x2 = x_base + (hue_positions[t['g2']] - (n_hue - 1) / 2) * width * 0.8
+            y = base_y + k * step
+            add_sig_bar(ax, x1, x2, y, h, p_to_stars(t['p_fdr']))
+
+        top = base_y + (len(sig_tests) - 1) * step + h + 0.06 * y_span
+        ax.set_ylim(y_min, top)
+
+    return tests
+
+# Plot 1: Max pain by group and trial type
+sns.violinplot(data=plot_data, x='trial_type', y='abs_max_val', hue='group_label', palette=GROUP_COLORS,
+               inner='box', ax=axes[0,0])
+axes[0,0].set_title('Max Pain by Clinical Group and Trial Type')
+axes[0,0].set_ylabel('Max Pain Rating (z-score)')
+add_sample_sizes(axes[0,0], plot_data, 'trial_type', 'group_label')
+add_hue_group_sig_bars(axes[0,0], plot_data, 'trial_type', 'group_label', 'abs_max_val',
+                        ['Control', 'Low', 'High'], label='Max Pain')
+
+# Plot 2: Min pain by group and trial type
+sns.violinplot(data=plot_data, x='trial_type', y='abs_min_val', hue='group_label', palette=GROUP_COLORS,
+               inner='box', ax=axes[0,1])
+axes[0,1].set_title('Min Pain by Clinical Group and Trial Type')
+axes[0,1].set_ylabel('Min Pain Rating (z-score)')
+add_sample_sizes(axes[0,1], plot_data, 'trial_type', 'group_label')
+add_hue_group_sig_bars(axes[0,1], plot_data, 'trial_type', 'group_label', 'abs_min_val',
+                        ['Control', 'Low', 'High'], label='Min Pain')
+
+# Plot 3: AUC by group and trial type
+sns.violinplot(data=plot_data, x='trial_type', y='auc_total', hue='group_label', palette=GROUP_COLORS,
+               inner='box', ax=axes[1,0])
+axes[1,0].set_title('AUC Total by Clinical Group and Trial Type')
+axes[1,0].set_ylabel('AUC Total (z-score)')
+add_sample_sizes(axes[1,0], plot_data, 'trial_type', 'group_label')
+add_hue_group_sig_bars(axes[1,0], plot_data, 'trial_type', 'group_label', 'auc_total',
+                        ['Control', 'Low', 'High'], label='AUC Total')
+
+# Plot 4: Normalized pain change by group and trial type
+sns.violinplot(data=plot_data, x='trial_type', y='abs_normalized_pain_change', hue='group_label', palette=GROUP_COLORS,
+               inner='box', ax=axes[1,1])
+axes[1,1].set_title('Normalized Pain Change by Clinical Group')
+axes[1,1].set_ylabel('Normalized Pain Change (z-score)')
+add_sample_sizes(axes[1,1], plot_data, 'trial_type', 'group_label')
+add_hue_group_sig_bars(axes[1,1], plot_data, 'trial_type', 'group_label', 'abs_normalized_pain_change',
+                        ['Control', 'Low', 'High'], label='Normalized Pain Change')
+
+plt.tight_layout()
+plt.savefig(f'{FIGPATH}/raw_distributions_by_group.png', dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+plt.show()
+
+# ========================================================
+# Plot OH and OA magnitude by clinical group (subject-averaged)
+# + pairwise Mann-Whitney U tests (non-parametric) + FDR correction + significance bars + n subjects
+# ========================================================
+subj_avg = (
+    unified_data[unified_data['trial_type'].isin(['onset', 'offset'])]
+    .groupby(['subject', 'group_label', 'trial_type'], as_index=False)['abs_normalized_pain_change']
+    .mean()
+    .rename(columns={'abs_normalized_pain_change': 'mean_abs_normalized_pain_change'})
+)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+order = ['Control', 'Low', 'High']
+
+panel_data = {}
+tests_by_panel = {0: [], 1: []}
+
 # 1) Build per-panel datasets and run pairwise tests
 for ax_idx, (trial_type, title) in enumerate([
     ('onset', 'Onset Trials'),
@@ -319,11 +407,11 @@ for ax_idx, (trial_type, title) in enumerate([
     }
     present_groups = [g for g in order if len(group_series[g]) > 1]
 
-    # Pairwise nonparametric tests (Mann-Whitney U)
+    # Pairwise Mann-Whitney U tests (non-parametric)
     raw_tests = []
     for g1, g2 in combinations(present_groups, 2):
-        t_stat, p_raw = stats.mannwhitneyu(group_series[g1], group_series[g2], alternative='two-sided')
-        raw_tests.append({'g1': g1, 'g2': g2, 't_stat': t_stat, 'p_raw': p_raw})
+        u_stat, p_raw = stats.mannwhitneyu(group_series[g1], group_series[g2], alternative='two-sided')
+        raw_tests.append({'g1': g1, 'g2': g2, 'u_stat': u_stat, 'p_raw': p_raw})
 
     # FDR correction within this panel
     if raw_tests:
@@ -333,6 +421,9 @@ for ax_idx, (trial_type, title) in enumerate([
             t['p_fdr'] = p_fdr[i]
             t['sig'] = bool(reject[i])
             tests_by_panel[ax_idx].append(t)
+            mark = p_to_stars(t['p_fdr'])
+            print(f"  [{trial_type}] {t['g1']} vs {t['g2']}: U={t['u_stat']:.1f}, "
+                  f"p_raw={t['p_raw']:.4f}, p_FDR={t['p_fdr']:.4f} {mark}")
 
 # 2) Plot each panel and annotate n + significance bars
 for ax_idx, ax in enumerate(axes):
@@ -363,7 +454,7 @@ for ax_idx, ax in enumerate(axes):
 
     ax.set_title(f'{title}: Subject-Averaged Normalized Pain Change')
     ax.set_xlabel('Clinical Group')
-    ax.set_ylabel('Normalized Pain Change (%)')
+    ax.set_ylabel('Normalized Pain Change (z-score)')
     ax.grid(True, alpha=0.3)
 
     # n subjects per group
@@ -471,9 +562,9 @@ for idx, (trial_type, preceding_metric, direction, metric_label) in enumerate(an
     ax = axes[row, col]
     # Y-axis: always 0 to 100 for onset, -100 to 0 for offset
     if trial_type == 'onset':
-        ax.set_ylim(0, 101)
+        ax.set_ylim(0, 2)
     else:
-        ax.set_ylim(0, -101)
+        ax.set_ylim(0, -2)
     # Filter data for this analysis with direction
     base_data = contrast_trials[
         (contrast_trials['trial_type'] == trial_type) & 
@@ -483,10 +574,10 @@ for idx, (trial_type, preceding_metric, direction, metric_label) in enumerate(an
     # Apply direction filter
     if direction == 'positive':
         plot_data = base_data[base_data[preceding_metric] > 0]
-        ax.set_xlim(0, 101)  # Focus on positive range
+        ax.set_xlim(0, 2)  # Focus on positive range
     elif direction == 'negative':
         plot_data = base_data[base_data[preceding_metric] < 0]
-        ax.set_xlim(0, -101)  # Focus on negative range
+        ax.set_xlim(0, -2)  # Focus on negative range
     else:
         plot_data = base_data
     
@@ -530,8 +621,8 @@ for idx, (trial_type, preceding_metric, direction, metric_label) in enumerate(an
                 })
     
     # Formatting
-    ax.set_xlabel(f'{preceding_metric.replace("preceding_abs_", "").replace("_", " ").title()}')
-    ax.set_ylabel('Current Normalized Pain Change (%)')
+    ax.set_xlabel(f'{preceding_metric.replace("preceding_abs_", "").replace("_", " ").title()} (z-score)')
+    ax.set_ylabel('Current Normalized Pain Change (z-score)')
     ax.legend(fontsize=8, loc='upper right')
     ax.grid(True, alpha=0.3)
 
@@ -778,7 +869,7 @@ if len(onset_subj_data) > 0:
                    palette=traj_colors, inner='box', ax=axes[0], order=traj_order)
     axes[0].set_title('Onset Hyperalgesia by Classification\n(Subject Averages)', fontweight='bold', fontsize=14)
     axes[0].set_xlabel('Classification', fontweight='bold', fontsize=12)
-    axes[0].set_ylabel('Average Normalized Pain Change (%)', fontweight='bold', fontsize=12)
+    axes[0].set_ylabel('Average Normalized Pain Change (z-score)', fontweight='bold', fontsize=12)
     
     # Add sample sizes (now subjects, not trials!)
     for i, traj_group in enumerate(traj_order):
@@ -794,7 +885,7 @@ if len(offset_subj_data) > 0:
                    palette=traj_colors, inner='box', ax=axes[1], order=traj_order)
     axes[1].set_title('Offset Analgesia by Classification\n(Subject Averages)', fontweight='bold', fontsize=14)
     axes[1].set_xlabel('Classification', fontweight='bold', fontsize=12)
-    axes[1].set_ylabel('Average Normalized Pain Change (%)', fontweight='bold', fontsize=12)
+    axes[1].set_ylabel('Average Normalized Pain Change (z-score)', fontweight='bold', fontsize=12)
     
     # Add sample sizes
     for i, traj_group in enumerate(traj_order):
@@ -1128,22 +1219,22 @@ for col_idx, trial_type in enumerate(trial_types):
         
         # Set y-axis limits based on trial type
         if trial_type == 'onset':  # Hyperalgesia trials
-            ax.set_ylim(0, 100)
+            ax.set_ylim(0, 3)
         else:  # Offset/Analgesia trials
-            ax.set_ylim(0, -100)
-        
+            ax.set_ylim(0, -3)
+
         # Set x-axis limits based on direction
         if sign_label == 'Positive':
-            ax.set_xlim(0, 100)
+            ax.set_xlim(0, 3)
         else:  # Negative
-            ax.set_xlim(0, -100)
+            ax.set_xlim(0, -3)
         
         # Labels and title
         if row_idx == 1:  # Only add x-label to bottom row
             ax.set_xlabel(metric_label, fontsize=11, fontweight='bold')
         
         if col_idx == 0:  # Only add y-label to leftmost column
-            ax.set_ylabel(f'{trial_labels[trial_type]} Magnitude (%)',
+            ax.set_ylabel(f'{trial_labels[trial_type]} Magnitude (z-score)',
                           fontsize=11, fontweight='bold')
 
         title = f"{sign_label} Preceding Change\n{trial_labels[trial_type]}"

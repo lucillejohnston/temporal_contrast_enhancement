@@ -7,7 +7,7 @@ TTL Codes:
 - 3 pulses indicate start and end of trial
 - 1 pulse indicates start and end of hold phase (within a trial)
 """
-import serial, os, time, sys
+import serial, os, time
 from datetime import datetime
 
 def open_serial_port(port_name="/dev/tty.usbserial-BBTKUSBTTL", baud_rate=115200):
@@ -116,6 +116,8 @@ def send_event_ttl(ser, logfile, pulse_pin=2, pulse_width=0.1, inter_pulse_delay
     time.sleep(inter_pulse_delay)
 
 if __name__ == "__main__":
+    import io
+
     # Set the file save location
     save_folder = os.path.join(os.path.dirname(__file__), "TTL_data")
 
@@ -123,18 +125,32 @@ if __name__ == "__main__":
     port_name = "/dev/tty.usbserial-BBTKUSBTTL"
     ser = open_serial_port(port_name)
 
-    # send_ttl_pulse(ser, sys.stdout, pulse_pin=2, pulse_width=0.1)
-    # print("Test pulse sent")
-    # ser.close()
-    
-    # Get patient info and determine log file path.
-    log_file_path = get_patient_info(save_folder, session='task')
-    
-    # Open the log file in append mode and send the TTL pulse.
-    with open(log_file_path, "a") as logfile:
-        send_ttl_pulse(ser, logfile, pulse_pin=2, pulse_width=0.1)
-    
-    print(f"File saved to: {log_file_path}")
+    # Accumulate timestamps from every round of test pulses.
+    pulse_log = io.StringIO()
+
+    while True:
+        # Send 10 test pulses
+        for i in range(10):
+            send_ttl_pulse(ser, pulse_log, pulse_pin=2, pulse_width=0.1)
+            time.sleep(0.5)
+            print("Test pulse sent")
+
+        answer = input("Send 10 more test pulses? (y/n): ").strip().lower()
+        while answer not in ("y", "n"):
+            answer = input("Please enter 'y' or 'n': ").strip().lower()
+
+        if answer == "y":
+            continue
+
+        # Get patient info and determine log file path.
+        log_file_path = get_patient_info(save_folder, session='task')
+
+        # Save all test pulse timestamps to the patient's log file.
+        with open(log_file_path, "a") as logfile:
+            logfile.write(pulse_log.getvalue())
+
+        print(f"File saved to: {log_file_path}")
+        break
 
     # Close the serial port.
     ser.close()

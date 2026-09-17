@@ -9,7 +9,7 @@ import seaborn as sns
 import statsmodels.formula.api as smf
 from statsmodels.stats.multitest import multipletests
 
-FIGPATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/cross-dataset_comparisons/pains'
+FIGPATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/figures/cross-dataset_comparisons/pains_zscore'
 base_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data'
 sql_path = f'{base_path}/combined_data.sqlite'
 
@@ -119,6 +119,28 @@ for new_col, source_col in {
 }.items():
     df[new_col] = df.apply(lambda row: get_preceding_value(row, source_col, df), axis=1)
 
+# Z-score numeric metrics within each pain_group_source (pooling all trial types)
+_metrics_to_zscore = [
+    'abs_normalized_pain_change',
+    'preceding_abs_normalized_pain_change',
+    'auc_total',
+    'abs_max_val',
+    'abs_min_val',
+    'abs_max_time',
+    'abs_peak_to_peak',
+    'time_yoked_normalized_pain_change',
+]
+for _metric in _metrics_to_zscore:
+    if _metric not in df.columns:
+        continue
+    _grp_stats = df.groupby('pain_group_source')[_metric].agg(['mean', 'std'])
+    for _grp, _row in _grp_stats.iterrows():
+        _mask = df['pain_group_source'] == _grp
+        if _row['std'] > 0:
+            df.loc[_mask, _metric] = (
+                (df.loc[_mask, _metric] - _row['mean']) / _row['std']
+            )
+
 contrast_df = df[df['trial_type'].isin(['onset', 'offset'])].copy()
 
 # Load trajectory classifications
@@ -221,7 +243,7 @@ for ax_idx, trial_type in enumerate(trial_order):
     
     ax.set_title(f'{trial_type.title()} Trials', fontsize=13, fontweight='bold')
     ax.set_xlabel('Pain Group Source', fontsize=11, fontweight='bold')
-    ax.set_ylabel('Normalized Pain Change (%)' if ax_idx == 0 else '', 
+    ax.set_ylabel('Normalized Pain Change (z-score)' if ax_idx == 0 else '', 
                   fontsize=11, fontweight='bold')
     ax.tick_params(axis='x', rotation=45)
     ax.grid(True, alpha=0.3, axis='y')
@@ -369,7 +391,7 @@ for idx, (trial_type, preceding_metric, direction, metric_label) in enumerate(an
     ax.set_xlabel(
         preceding_metric.replace("preceding_abs_", "").replace("_", " ").title()
     )
-    ax.set_ylabel('Current Normalized Pain Change (%)')
+    ax.set_ylabel('Current Normalized Pain Change (z-score)')
     ax.legend(fontsize=7, loc='upper right')
     ax.grid(True, alpha=0.3)
 
@@ -685,7 +707,7 @@ for ax_idx, trial_type in enumerate(all_trial_types):
     sns.histplot(data=subset, x='auc_total', hue=SOURCE_COL,
                  palette=COLORS, multiple='layer', bins=25, kde=True, alpha=0.5, ax=ax)
     ax.set_title(trial_type.title())
-    ax.set_xlabel('AUC Total')
+    ax.set_xlabel('AUC Total (z-score)')
     if ax_idx > 0:
         ax.set_ylabel('')
     grp = [subset[subset[SOURCE_COL] == s]['auc_total'].dropna() for s in group_order if len(subset[subset[SOURCE_COL] == s]) > 3]
@@ -706,7 +728,7 @@ for ax_idx, trial_type in enumerate(all_trial_types):
     sns.histplot(data=subset, x='abs_max_val', hue=SOURCE_COL,
                  palette=COLORS, multiple='layer', bins=25, kde=True, alpha=0.5, ax=ax)
     ax.set_title(trial_type.title())
-    ax.set_xlabel('Absolute Max Value')
+    ax.set_xlabel('Absolute Max Value (z-score)')
     if ax_idx > 0:
         ax.set_ylabel('')
     grp = [subset[subset[SOURCE_COL] == s]['abs_max_val'].dropna() for s in group_order if len(subset[subset[SOURCE_COL] == s]) > 3]
@@ -725,8 +747,8 @@ for source in group_order:
     subset = df[df[SOURCE_COL] == source].dropna(subset=['auc_total', 'abs_max_val'])
     plt.scatter(subset['auc_total'], subset['abs_max_val'],
                 color=COLORS[source], alpha=0.4, label=source, s=30)
-plt.xlabel('AUC Total')
-plt.ylabel('Absolute Max Value')
+plt.xlabel('AUC Total (z-score)')
+plt.ylabel('Absolute Max Value (z-score)')
 plt.title('AUC Total vs Absolute Max Value by Pain Group Source')
 plt.legend()
 plt.grid(True, alpha=0.3)
@@ -772,7 +794,7 @@ for ax_idx, (hold_type, stepped_type) in enumerate([('t1_hold', 'offset'), ('t2_
                     fontweight='bold', color=COLORS[source])
     ax.set_title(f'{hold_type} vs {stepped_type}', fontweight='bold')
     ax.set_xlabel('')
-    ax.set_ylabel('Normalized Pain Change (%)' if ax_idx == 0 else '')
+    ax.set_ylabel('Normalized Pain Change (z-score)' if ax_idx == 0 else '')
     ax.grid(True, alpha=0.3, axis='y')
     ax.set_ylim(-200, 200)
 plt.suptitle('Time-Yoked (Hold) vs Absolute (Stepped) Normalized Pain Change by Pain Group',
@@ -814,7 +836,7 @@ for ax_idx, (hold_type, stepped_type) in enumerate([('t1_hold', 'offset'), ('t2_
                     fontweight='bold', color=COLORS[source])
     ax.set_title(f'{hold_type} vs {stepped_type}: Abs Pain Change', fontweight='bold')
     ax.set_xlabel('')
-    ax.set_ylabel('Normalized Pain Change (%)' if ax_idx == 0 else '')
+    ax.set_ylabel('Normalized Pain Change (z-score)' if ax_idx == 0 else '')
     ax.grid(True, alpha=0.3, axis='y')
 plt.suptitle('Absolute Normalized Pain Change: Hold vs Stepped by Pain Group',
              fontsize=13, fontweight='bold')
@@ -880,7 +902,7 @@ for ax_idx, trial_type in enumerate(['onset', 'offset']):
                    palette=COLORS, inner='box', order=group_order, ax=ax)
     ax.set_title(f'{trial_type.title()} Trials')
     ax.set_xlabel('')
-    ax.set_ylabel('Abs Peak-to-Peak' if ax_idx == 0 else '')
+    ax.set_ylabel('Abs Peak-to-Peak (z-score)' if ax_idx == 0 else '')
     ax.tick_params(axis='x', rotation=45)
     y_top = subset['abs_peak_to_peak'].quantile(0.97)
     for (g1, g2), (x1, x2) in zip(_cross_pairs, _cross_pair_xpos):
@@ -901,7 +923,7 @@ fig, ax = plt.subplots(figsize=(12, 6))
 sns.violinplot(data=hold_df, x='trial_type', y='abs_normalized_pain_change',
                hue=SOURCE_COL, palette=COLORS, hue_order=group_order, inner='box', ax=ax)
 ax.set_xlabel('Trial Type')
-ax.set_ylabel('Normalized Pain Change (%)')
+ax.set_ylabel('Normalized Pain Change (z-score)')
 ax.set_title('Hold Trial Normalized Pain Change by Pain Group Source')
 plt.tight_layout()
 plt.savefig(f'{FIGPATH}/pain_groups_dataset_comparison_hold_trials.png', dpi=300, bbox_inches='tight')
@@ -941,8 +963,8 @@ for source in group_order:
 
 lim = max(prop_df['onset_abs'].max(), prop_df['offset_abs'].max()) * 1.05
 plt.plot([0, lim], [0, lim], 'k:', alpha=0.4, label='y=x')
-plt.xlabel('|Offset Mean Normalized Pain Change| (%)')
-plt.ylabel('|Onset Mean Normalized Pain Change| (%)')
+plt.xlabel('|Offset Mean Normalized Pain Change| (z-score)')
+plt.ylabel('|Onset Mean Normalized Pain Change| (z-score)')
 plt.title('Onset vs Offset Magnitude: Subject-Level by Pain Group Source')
 plt.legend(fontsize=8)
 plt.grid(True, alpha=0.3)

@@ -143,31 +143,24 @@ plt.tight_layout()
 plt.savefig(f'{FIGPATH}/data_summary_trial_subject_counts.png', dpi=300, bbox_inches='tight')
 plt.show()
 #%% Are there differences in OA and OH across datasets?
-# LME of onset trials 
-onset_df = contrast_df[contrast_df['trial_type'] == 'onset'].copy()
+# Mann-Whitney U: 2 groups (kneeOA vs plosONE), non-parametric
+onset_df = contrast_df[contrast_df['trial_type'] == 'onset'].copy().dropna(subset=['abs_normalized_pain_change'])
+offset_df = contrast_df[contrast_df['trial_type'] == 'offset'].copy().dropna(subset=['abs_normalized_pain_change'])
 
-model_onset = smf.mixedlm(
-    "abs_normalized_pain_change ~ C(control_dataset)",
-    data=onset_df,
-    groups=onset_df["subject"]
-)
+datasets_in_data = contrast_df['control_dataset'].unique().tolist()
+g1_label, g2_label = datasets_in_data[0], datasets_in_data[1]
 
-result_onset = model_onset.fit(reml=False)
-print("Onset Trials LME Results:")
-print(result_onset.summary())
+onset_g1  = onset_df[onset_df['control_dataset'] == g1_label]['abs_normalized_pain_change']
+onset_g2  = onset_df[onset_df['control_dataset'] == g2_label]['abs_normalized_pain_change']
+offset_g1 = offset_df[offset_df['control_dataset'] == g1_label]['abs_normalized_pain_change']
+offset_g2 = offset_df[offset_df['control_dataset'] == g2_label]['abs_normalized_pain_change']
 
-# LME of offset trials
-offset_df = contrast_df[contrast_df['trial_type'] == 'offset'].copy()
+_, onset_p  = stats.mannwhitneyu(onset_g1,  onset_g2,  alternative='two-sided')
+_, offset_p = stats.mannwhitneyu(offset_g1, offset_g2, alternative='two-sided')
 
-model_offset = smf.mixedlm(
-    "abs_normalized_pain_change ~ C(control_dataset)",
-    data=offset_df,
-    groups=offset_df["subject"]
-)
-
-result_offset = model_offset.fit(reml=False)
-print("Offset Trials LME Results:")
-print(result_offset.summary())
+print("Are there differences in OA and OH across datasets? (Mann-Whitney U)")
+print(f"  Onset:  U p = {onset_p:.4f}  {'***' if onset_p < 0.001 else '**' if onset_p < 0.01 else '*' if onset_p < 0.05 else 'ns'}")
+print(f"  Offset: U p = {offset_p:.4f}  {'***' if offset_p < 0.001 else '**' if offset_p < 0.01 else '*' if offset_p < 0.05 else 'ns'}")
 
 # Plot with stat annotations
 plt.figure(figsize=(10, 7))
@@ -181,11 +174,6 @@ ax = sns.violinplot(
     inner='box',
     order=trial_order
 )
-
-# onset stats
-onset_p = result_onset.pvalues['C(control_dataset)[T.plosONE]']
-# offset stats
-offset_p = result_offset.pvalues['C(control_dataset)[T.plosONE]']
 # significance formatting
 def format_p(p):
     if p < 0.001:
@@ -723,14 +711,14 @@ for ax_idx, (hold_type, stepped_type) in enumerate([('t1_hold', 'offset'), ('t2_
     x_order = [f'{hold_type}\n(time-yoked)', stepped_type]
     sns.violinplot(data=plot_df, x='category', y='value', hue=SOURCE_COL,
                    palette=COLORS, inner='box', order=x_order, ax=ax)
-    # Paired t-test within each source (subject means)
+    # Wilcoxon signed-rank within each source (subject means, non-parametric paired test)
     y_ann = plot_df['value'].quantile(0.97)
     for s_idx, source in enumerate(sources):
         h_means = plot_df[(plot_df[SOURCE_COL] == source) & (plot_df['category'] == x_order[0])].groupby('subject')['value'].mean()
         s_means = plot_df[(plot_df[SOURCE_COL] == source) & (plot_df['category'] == x_order[1])].groupby('subject')['value'].mean()
         common = h_means.index.intersection(s_means.index)
         if len(common) > 3:
-            _, p = stats.ttest_rel(h_means[common], s_means[common])
+            _, p = stats.wilcoxon(h_means[common], s_means[common])
             y_line = y_ann + s_idx * 30
             x_off = -0.2 + 0.4 * s_idx
             ax.plot([x_off, 1 + x_off], [y_line, y_line], '-', color=COLORS[source], lw=1.5)
@@ -771,7 +759,7 @@ for ax_idx, (hold_type, stepped_type) in enumerate([('t1_hold', 'offset'), ('t2_
         s_means = plot_df[(plot_df[SOURCE_COL] == source) & (plot_df['category'] == x_order[1])].groupby('subject')['value'].mean()
         common = h_means.index.intersection(s_means.index)
         if len(common) > 3:
-            _, p = stats.ttest_rel(h_means[common], s_means[common])
+            _, p = stats.wilcoxon(h_means[common], s_means[common])
             y_line = y_ann + s_idx * 8
             x_off = -0.2 + 0.4 * s_idx
             ax.plot([x_off, 1 + x_off], [y_line, y_line], '-', color=COLORS[source], lw=1.5)

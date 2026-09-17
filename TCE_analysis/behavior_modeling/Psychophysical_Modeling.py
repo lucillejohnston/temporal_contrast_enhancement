@@ -5,7 +5,7 @@ and testing with leave one trial out cross-validation
 on temporal contrast enhancement data.
 
 Author: Lucille Johnston
-Updated: 1/13/26
+Updated: 9/11/26
 """
 #%%
 import pandas as pd
@@ -24,12 +24,19 @@ from scipy.integrate import solve_ivp
 from datetime import datetime
 
 DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/' # path for data files
-FIG_PATH = '/Users/ljohnston1/Desktop/Python/TCE_Figures/' # path for saving figures
-
-TRIAL_DATA = DATA_PATH + 'trial_data_trimmed_downsampled.json'
+FIG_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/behavior_modeling/figures/' # path for saving figures
+KNEE_OA_DATA = DATA_PATH + 'kneeOA_trial_data_trimmed_downsampled.json'
+PLOS_ONE_DATA = DATA_PATH + 'plosONE_trial_data_trimmed_downsampled.json'
+CLBP_DATA = DATA_PATH + 'cLBP_trial_data_trimmed_downsampled.json'
 LIMITS_DATA = DATA_PATH + 'limits_data.csv'
 # Load the raw trial data (for time series plotting)
-data_df = pd.read_json(TRIAL_DATA, orient='records')
+all_data = [KNEE_OA_DATA,
+            PLOS_ONE_DATA,
+            CLBP_DATA]
+TRIAL_DATA = []
+for data in all_data:
+    data_df = pd.read_json(data, orient='records')
+    TRIAL_DATA.append(data_df)
 limits_data = pd.read_csv(LIMITS_DATA)
 # # Parameters from Petre 2017 
 # petre_params = {
@@ -119,14 +126,14 @@ ax4.legend()
 ax4.grid(True, alpha=0.3)
 
 plt.tight_layout()
+plt.savefig(f'{FIG_PATH}{datetime.date}_modelResults.png')
 plt.show()
-
 
 
 #%% 
 # Configuration for optimization approach
-# 137 subjects maximum
-N_SUBJECTS = 20 # Number of subjects to process
+# 
+N_SUBJECTS = 80 # Number of subjects to process
 USE_MULTIPLE_STARTS = True  # Try multiple random starting points
 N_STARTS = 10  # Number of random starts per subject
 OPTIMIZE_THETA = False  # Use data-derived thresholds (set to True to optimize theta too)
