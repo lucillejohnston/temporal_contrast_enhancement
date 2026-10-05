@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import statsmodels.api as sm
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
+from sklearn.metrics import r2_score
 import signal
 
 def plot_autocorrelations(df, lags=50):
@@ -182,6 +183,342 @@ def prepare_data_for_optimization(subject_data):
     temp_deriv_func = interp1d(time_data, temp_derivatives, kind='linear',
                                bounds_error=False, fill_value='extrapolate')
     return time_data, temp_data, pain_data, concatenated_data, temp_deriv_func
+
+
+def prepare_trials_for_optimization(subject_data):
+    """
+    Split one subject's data into independent per-trial blocks.
+
+    This is the per-trial counterpart to prepare_data_for_optimization(), which
+    concatenates every trial into one continuous time series with a 1s gap and
+    integrates a single ODE across the whole thing. That carries the model's
+    pain state from the end of one trial into the start of the next, and since
+    gamma_bar is small almost nothing decays in 1s. About 18% of trials end
+    above 10 VAS (mostly the hold trials, where the stimulus is still on when
+    the trace is cut), so for those the model would start the next trial with
+    pain the subject does not have, and the error compounds down the session.
+
+    Integrating each trial from p=0 removes that. Each trial keeps its own
+    aligned_time, so integration starts in the pre-stimulus baseline where
+    T < theta and pain is genuinely 0.
+
+    Parameters:
+    -----------
+    subject_data : DataFrame
+        One subject's data with columns 'trial_num', 'aligned_time',
+        'temperature', 'pain'.
+
+    Returns:
+    --------
+    trials : list of dict
+        One entry per usable trial, each with 'trial_num', 'time', 'temperature',
+        'pain', 'temp_func' and 'continuous_time' (for plotting only).
+    """
+    trials = []
+    time_offset = 0.0
+    for trial_num in sorted(subject_data['trial_num'].unique()):
+        trial_data = subject_data[subject_data['trial_num'] == trial_num]
+        clean = trial_data.dropna(subset=['aligned_time', 'temperature', 'pain'])
+        clean = clean.sort_values('aligned_time')
+        # Strictly increasing time is required by interp1d and solve_ivp
+        clean = clean[~clean['aligned_time'].duplicated(keep='first')]
+        if len(clean) < 3:
+            continue
+
+        t = clean['aligned_time'].values
+        temp = clean['temperature'].values
+        pain = clean['pain'].values
+
+        trials.append({
+            'trial_num': int(trial_num),
+            # Carried through so per-trial fits can be split by trial type
+            # (offset / onset / t1_hold / t2_hold) without a re-merge later
+            'trial_type': (clean['trial_type'].iloc[0]
+                           if 'trial_type' in clean.columns else None),
+            'time': t,
+            'temperature': temp,
+            'pain': pain,
+            'temp_func': interp1d(t, temp, kind='linear',
+                                  bounds_error=False, fill_value='extrapolate'),
+            # Only used to lay trials end-to-end for plotting; the ODE never
+            # sees this, so the 1s gap is cosmetic here.
+            'continuous_time': t - t[0] + time_offset,
+        })
+        time_offset += (t[-1] - t[0]) + 1.0
+
+    return trials
+
+
+def simulate_trials(params, trials, method='RK45', rtol=1e-6, atol=1e-9,
+                    max_step=1.0, initial_pain='observed'):
+    """
+    Integrate the simplified Cecchi model separately for each trial, always
+    starting from p=0.
+
+    Returns a list of predicted pain arrays (one per trial, aligned to that
+    trial's 'time'), or None if any trial fails to solve.
+
+    Solver choice matters here, and the defaults are not arbitrary. Every trial
+    opens with several seconds of baseline at ~32C, well below theta, where
+    F(T,theta)=0 and so dp/dt=0. Given a flat start and no step ceiling, LSODA
+    concludes the solution is constant, takes about four derivative
+    evaluations, and steps straight over the stimulus -- returning p=0 for the
+    whole trial no matter how strong the forcing. That makes the optimizer's
+    objective flat and its fitted parameters meaningless.
+
+    Capping max_step at the 1 Hz sample interval prevents the solver from
+    stepping across the ramp. RK45 is used because it is both the fastest of
+    the safe options and the one the others converge toward.
+    """
+    predictions = []
+    for trial in trials:
+        t = trial['time']
+        p0 = (float(np.clip(trial['pain'][0], 0.0, 100.0))
+              if isinstance(initial_pain, str) and initial_pain == 'observed'
+              else float(initial_pain))
+        sol = solve_ivp(cecchi2012_simplified, (t[0], t[-1]), [p0],
+                        args=(params, trial['temp_func']),
+                        t_eval=t, method=method, rtol=rtol, atol=atol,
+                        max_step=max_step)
+        if not sol.success:
+            return None
+        predictions.append(np.clip(sol.y[0], 0.0, 100.0))
+    return predictions
+
+
+def simulate_trials_analytic(params, trials, cap=100.0, initial_pain='observed'):
+    """
+    Exact solution of the simplified Cecchi model, with no ODE solver.
+
+    Eq. 2 of Cecchi 2012,
+
+        p'(t) = alpha_bar * F(T(t), theta) - gamma_bar * p(t),
+
+    is first-order and linear in p, so it can be integrated in closed form
+    instead of stepped through numerically. Over one sample interval h, with
+    F varying linearly between F_k and F_k+1 (which is exactly how the 1 Hz
+    temperature is interpolated),
+
+        p_{k+1} = p_k e^{-gh} + a [ F_k (1-e^{-gh})/g
+                                    + ((F_{k+1}-F_k)/h)(h/g - (1-e^{-gh})/g^2) ]
+
+    This is the same equation and the same answer as solve_ivp, just arrived at
+    directly. It is ~100x faster, carries no integration error (which otherwise
+    corrupts the optimizer's finite-difference gradients), and cannot suffer the
+    step-skipping failure described in simulate_trials().
+
+    The step above is only exact where F is a straight line across the whole
+    interval, and F = max(0, T - theta) has a kink wherever the temperature
+    crosses theta: it sits at 0 for part of that second and then ramps. Those
+    crossing times are therefore inserted into the grid first, so that F is
+    genuinely piecewise linear on every interval and the formula is exact
+    throughout. Without this the prediction is off by a few VAS around each
+    crossing, which is precisely where the interesting dynamics are.
+
+    initial_pain controls where each trial's integration starts:
+
+      'observed' (default) -- start at the subject's own rating at t=0.
+      0.0 (or any number)  -- start from rest, as the paper assumes.
+
+    The paper starts from rest because its trials do: plosONE and kneeOA trials
+    open with the subject at VAS 0 in 99.9% of cases. cLBP trials do not --
+    29% of them begin above VAS 5 and 6.5% above VAS 25, because those traces
+    have no pre-stimulus baseline and the recording starts at stimulus onset.
+    Forcing p=0 on a trial where the subject is already at 83 makes the fit
+    impossible for reasons that have nothing to do with the model.
+
+    Either way this stays a free-running prediction: the model is given one
+    number at t=0 and then runs on temperature alone. It never sees the rest
+    of the observed pain, so this is not one-step-ahead prediction.
+
+    Returns a list of predicted pain arrays, one per trial, sampled at that
+    trial's original time points.
+    """
+    a = params['alpha_bar']
+    g = params['gamma_bar']
+    theta = params['theta']
+
+    predictions = []
+    for trial in trials:
+        t = trial['time']
+        T = trial['temperature']
+
+        # Insert the times where T crosses theta, so F has no kink inside any
+        # interval of the grid we integrate over.
+        d = T - theta
+        cross = np.where(np.sign(d[:-1]) * np.sign(d[1:]) < 0)[0]
+        if len(cross):
+            t_cross = t[cross] + (t[cross + 1] - t[cross]) * (
+                -d[cross] / (d[cross + 1] - d[cross]))
+            t_all = np.concatenate([t, t_cross])
+            order = np.argsort(t_all, kind='stable')
+            t_all = t_all[order]
+            is_original = np.concatenate(
+                [np.ones(len(t), bool), np.zeros(len(t_cross), bool)])[order]
+            F = np.maximum(0.0, np.interp(t_all, t, T) - theta)
+        else:
+            t_all = t
+            is_original = np.ones(len(t), bool)
+            F = np.maximum(0.0, d)
+
+        h = np.diff(t_all)
+        E = np.exp(-g * h)
+
+        # Contribution of the forcing over each interval
+        step = (F[:-1] * (1.0 - E) / g
+                + ((F[1:] - F[:-1]) / h) * (h / g - (1.0 - E) / g ** 2))
+
+        p = np.empty_like(t_all, dtype=float)
+        if isinstance(initial_pain, str) and initial_pain == 'observed':
+            p[0] = float(np.clip(trial['pain'][0], 0.0, cap))
+        else:
+            p[0] = float(initial_pain)
+        for k in range(len(h)):
+            p[k + 1] = p[k] * E[k] + a * step[k]
+            if p[k + 1] > cap:      # ratings are bounded above by the VAS
+                p[k + 1] = cap
+            elif p[k + 1] < 0.0:    # p >= 0 is imposed in the paper
+                p[k + 1] = 0.0
+        predictions.append(p[is_original])
+
+    return predictions
+
+
+################# Full (second-order) Cecchi 2012 model #################
+def pack_trials(trials):
+    """
+    Pad a subject's trials into rectangular arrays, so the full model can be
+    integrated for every trial at once instead of one at a time.
+
+    That matters more than it sounds. The full model is stiff -- Petre 2017's
+    fitted beta of 36.76 puts a 0.027s process inside it -- so it needs a very
+    small integration step, and a per-trial call to solve_ivp costs ~2.3s per
+    subject. At the thousands of evaluations a five-parameter search needs,
+    that is ~790 hours for this dataset. Stepping all of a subject's trials
+    forward together in numpy is ~765x faster and makes the fit feasible.
+
+    Padding is filled with the 32C baseline so the padded columns stay inert
+    (F = 0 there); 'mask' marks the real samples.
+    """
+    lens = [len(t['time']) for t in trials]
+    n, L = len(trials), max(lens)
+    T = np.full((n, L), 32.0)
+    pain = np.full((n, L), np.nan)
+    mask = np.zeros((n, L), dtype=bool)
+    for i, tr in enumerate(trials):
+        T[i, :lens[i]] = tr['temperature']
+        pain[i, :lens[i]] = tr['pain']
+        mask[i, :lens[i]] = True
+    return {'T': T, 'pain': pain, 'mask': mask, 'lens': lens,
+            'p0': np.array([float(np.clip(t['pain'][0], 0.0, 100.0))
+                            for t in trials]),
+            'observed_flat': np.concatenate([t['pain'] for t in trials])}
+
+
+def cecchi2012_full_substeps(beta, floor=16, safety=1.2):
+    """
+    Integration substeps per 1s sample needed for RK4 to stay stable.
+
+    Explicit RK4 is stable only while the step is below about 2.78/beta. With
+    a whole-second step and beta near 37 the solution diverges to infinity
+    rather than merely losing accuracy, so this is a hard requirement, not a
+    tuning knob. 'safety' keeps the step about 2.3x inside the limit.
+    """
+    return max(floor, int(np.ceil(beta / safety)))
+
+
+def simulate_trials_full(params, packed, cap=100.0, initial_pain='observed'):
+    """
+    Integrate the full second-order Cecchi 2012 model (their Eq. 1):
+
+        p''(t) = alpha * F(T,theta) - beta * p'(t) + gamma * (T'(t) - lambda) * p(t)
+
+    The third term is what the simplified first-order model loses. It responds
+    to the RATE of temperature change: when temperature falls quickly it acts
+    as a restoring force that pushes pain down faster than the decay term
+    alone could, which is the mechanism behind offset analgesia. The
+    simplification to Eq. 2 assumes lambda >> 1, which collapses (T' - lambda)
+    to a constant and removes that mechanism entirely.
+
+    T is linearly interpolated between 1 Hz samples, so T' is constant within
+    each interval and is taken as the per-second difference.
+
+    params : dict with alpha, beta, gamma, lam, theta
+    packed : output of pack_trials()
+
+    Returns the predicted pain as an (n_trials, L) array.
+    """
+    T = packed['T']
+    n, L = T.shape
+    a, b = params['alpha'], params['beta']
+    g, lam, theta = params['gamma'], params['lam'], params['theta']
+
+    sub = cecchi2012_full_substeps(b)
+    h = 1.0 / sub
+
+    if isinstance(initial_pain, str) and initial_pain == 'observed':
+        p = packed['p0'].copy()
+    else:
+        p = np.full(n, float(initial_pain))
+    v = np.zeros(n)                      # pain is not changing at trial onset
+
+    out = np.zeros((n, L))
+    out[:, 0] = p
+    for k in range(L - 1):
+        T0 = T[:, k]
+        rate = T[:, k + 1] - T0          # dT/dt, constant across this second
+        c = g * (rate - lam)             # the rate term's coefficient
+        for j in range(sub):
+            s0 = j * h
+
+            def deriv(p_, v_, s):
+                F = np.maximum(0.0, T0 + rate * s - theta)
+                return v_, a * F - b * v_ + c * p_
+
+            k1p, k1v = deriv(p, v, s0)
+            k2p, k2v = deriv(p + h / 2 * k1p, v + h / 2 * k1v, s0 + h / 2)
+            k3p, k3v = deriv(p + h / 2 * k2p, v + h / 2 * k2v, s0 + h / 2)
+            k4p, k4v = deriv(p + h * k3p, v + h * k3v, s0 + h)
+            p = p + h / 6 * (k1p + 2 * k2p + 2 * k3p + k4p)
+            v = v + h / 6 * (k1v + 2 * k2v + 2 * k3v + k4v)
+            # Cecchi impose p >= 0 by setting p' = 0 when p would go negative;
+            # clipping the state each substep is the discrete equivalent.
+            np.clip(p, 0.0, cap, out=p)
+        out[:, k + 1] = p
+
+    return out
+
+
+def full_predictions_flat(params, packed, **kwargs):
+    """Predicted pain for a subject, concatenated trial by trial (padding removed)."""
+    out = simulate_trials_full(params, packed, **kwargs)
+    return np.concatenate([out[i, :packed['lens'][i]]
+                           for i in range(len(packed['lens']))])
+
+
+def fit_metrics(observed, predicted):
+    """
+    Goodness-of-fit measures for one trial or one subject.
+
+    'r' is the zero-lag Pearson correlation, which is what Cecchi 2012 reports
+    as model accuracy (0.92 simple / 0.88 complex stimuli for the first-order
+    model), so it is the number to compare against the paper. r2 and sse are
+    kept alongside it because r only judges shape: a prediction with the right
+    shape but the wrong amplitude scores a high r and a poor r2, and knowing
+    which of the two is failing tells you what to fix.
+    """
+    observed = np.asarray(observed, dtype=float)
+    predicted = np.asarray(predicted, dtype=float)
+    sse = float(np.sum((observed - predicted) ** 2))
+    if np.std(observed) == 0 or np.std(predicted) == 0:
+        r = np.nan          # a flat trace has no correlation to speak of
+    else:
+        r = float(np.corrcoef(observed, predicted)[0, 1])
+    return {'r': r,
+            'r2': float(r2_score(observed, predicted)),
+            'mse': float(np.mean((observed - predicted) ** 2)),
+            'sse': sse}
+
 
 ################# Parameter Optimization Functions #################
 # def optimize_cecchi_full(subject_data, threshold=None, initial_params=None,
@@ -403,7 +740,8 @@ def prepare_data_for_optimization(subject_data):
 
 
 def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None,
-                               use_multiple_starts=False, n_starts=5, verbose=True):
+                               use_multiple_starts=False, n_starts=5, verbose=True,
+                               optimizer='de', random_state=0):
     """
     Parameter optimization for the Simplified Cecchi 2012 model.
     Simplified model: p'(t) = ᾱF(T,θ) - γ̄p(t)
@@ -419,16 +757,26 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
     initial_params : dict, optional
         Starting parameter values. If None, derives from Petre 2017 full model values.
     use_multiple_starts : bool
-        If True, tries multiple random starting points
+        If True, tries multiple random starting points (optimizer='multistart')
     n_starts : int
-        Number of random starting points to try
+        Number of random starting points to try (optimizer='multistart')
     verbose : bool
         Print optimization progress
-        
+    optimizer : {'de', 'multistart'}
+        'de' (default) uses differential evolution, a global search. Preferred
+        because the objective has flat regions -- any theta above the hottest
+        stimulus makes the forcing zero everywhere, so the cost stops
+        responding to the parameters and a gradient-following search stalls
+        there. 'multistart' is the older multi-start L-BFGS-B path.
+    random_state : int or None
+        Seed, so a given subject's fit is reproducible.
+
     Returns:
     --------
     best_params : dict
-        Optimized parameters with keys: alpha_bar, gamma_bar, theta, mse, success
+        Optimized parameters with keys: alpha_bar, gamma_bar, theta, mse,
+        r (zero-lag correlation, the measure Cecchi 2012 reports), r2, sse,
+        success, and trial_fits (the same measures per trial)
     best_result : OptimizeResult
         Full scipy optimization result object
     """
@@ -451,20 +799,29 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
         print(f"   Optimize theta: {optimize_theta}")
         print(f"   Multiple starts: {use_multiple_starts} (n={n_starts if use_multiple_starts else 1})")
     
-    # Prepare concatenated trial data
-    time_data, temp_data, pain_data, concatenated_data, temp_deriv_func = prepare_data_for_optimization(subject_data)
+    # Split into independent per-trial blocks. Each trial is integrated from
+    # p=0 rather than inheriting the previous trial's pain -- see
+    # prepare_trials_for_optimization() for why.
+    trials = prepare_trials_for_optimization(subject_data)
+    if len(trials) == 0:
+        if verbose:
+            print("    ❌ No usable trials for this subject.")
+        return None, None
+
+    # Laid end-to-end purely so results/plots keep their existing shape
+    time_data = np.concatenate([t['continuous_time'] for t in trials])
+    temp_data = np.concatenate([t['temperature'] for t in trials])
+    pain_data = np.concatenate([t['pain'] for t in trials])
+    trial_index = np.concatenate([np.full(len(t['time']), t['trial_num']) for t in trials])
+    concatenated_data = trials
 
     if verbose:
-        print(f"    Data: {len(time_data)} time points across {len(concatenated_data)} trials")
+        print(f"    Data: {len(time_data)} time points across {len(trials)} trials")
         print(f"    Pain range: {pain_data.min():.1f} to {pain_data.max():.1f}")
 
-    # Create interpolation function for ODE solver
-    temp_func = interp1d(time_data, temp_data, kind='linear',
-                         bounds_error=False, fill_value='extrapolate')
-    
     # Define objective function
     def objective(params_array):
-        """ MSE between observed and predicted pain"""
+        """ MSE between observed and predicted pain, pooled over trials"""
         if optimize_theta:
             alpha_bar, gamma_bar, theta = params_array
         else:
@@ -475,79 +832,105 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
             'gamma_bar': gamma_bar,
             'theta': theta
         }
-        
-        t_span = (time_data[0], time_data[-1])
-        y0 = [0.0] # Initial pain
 
         try:
-            sol = solve_ivp(cecchi2012_simplified, t_span, y0,
-                            args=(model_params, temp_func),
-                            t_eval=time_data, method='LSODA',
-                            rtol=1e-6, atol=1e-9)
-            if sol.success:
-                model_pain = np.maximum(sol.y[0], 0.0) # No negative pain
-                mse = np.mean((pain_data - model_pain) ** 2)
-                return mse
-            else:
+            predictions = simulate_trials_analytic(model_params, trials)
+            if predictions is None:
                 return 1e6
-        except:
+            model_pain = np.concatenate(predictions)
+            mse = np.mean((pain_data - model_pain) ** 2)
+            return mse if np.isfinite(mse) else 1e6
+        except Exception:
             return 1e6
-        
-    # Parameter bounds
+
+    # Parameter bounds.
+    #
+    # The previous limits -- alpha_bar (0.5, 8.0), gamma_bar (0.01, 0.6) --
+    # came from parameter_search.py, which ran against the LSODA objective
+    # that silently returned a flat zero prediction. They were therefore
+    # derived from fits that carried no information, and in practice most
+    # subjects came back pinned exactly against them, meaning the bound rather
+    # than the data was choosing the answer. These are wide enough to be
+    # inactive for a well-behaved subject; landing on one is now recorded in
+    # 'at_bounds' and should be read as a warning about that fit.
+    #
+    # theta stops at 30C because the stimulus baseline is ~32C: a threshold
+    # below baseline means the forcing never switches off, which is not
+    # physiologically meaningful and signals a failed fit rather than a low
+    # pain threshold.
+    ALPHA_BOUNDS = (0.001, 50.0)
+    GAMMA_BOUNDS = (0.001, 3.0)
+    THETA_BOUNDS = (30.0, 52.0)
+
     if optimize_theta:
-        bounds = [
-            (0.5, 8.0), # alpha_bar: based on parameter search
-            (0.01, 0.6), # gamma_bar: based on parameter search
-            (37.0, 50.0) # theta 
-        ]
+        bounds = [ALPHA_BOUNDS, GAMMA_BOUNDS, THETA_BOUNDS]
+        param_names = ['alpha_bar', 'gamma_bar', 'theta']
         x0_default = [initial_params['alpha_bar'],
                       initial_params['gamma_bar'],
                       initial_params['theta']]
     else:
-        bounds = [
-            (0.5, 10.0), # alpha_bar: based on parameter search
-            (0.01, 0.6) # gamma_bar: based on parameter search
-        ]
+        bounds = [ALPHA_BOUNDS, GAMMA_BOUNDS]
+        param_names = ['alpha_bar', 'gamma_bar']
         x0_default = [initial_params['alpha_bar'],
                       initial_params['gamma_bar']]
     
-    # Generate starting points
-    if use_multiple_starts:
-        starting_points = []
-        for _ in range(n_starts):
-            random_start = [np.random.uniform(b[0],b[1]) for b in bounds]
-            starting_points.append(random_start)
-    else:
-        starting_points = [[np.random.uniform(0.8, 1.2), np.random.uniform(0.08, 0.12)]]
-
-    # Try each starting point
     best_result = None
     best_cost = np.inf
     best_start_idx = -1
-    for idx, x0 in enumerate(starting_points):
+
+    if optimizer == 'de':
+        # Differential evolution: a global search that never asks "which way is
+        # downhill". That matters because this objective has large dead flat
+        # regions -- whenever theta sits above the hottest stimulus, F is 0
+        # everywhere, the model predicts a flat zero, and the cost is constant.
+        # A gradient follower that steps into one of those plateaus stops dead,
+        # which is how subjects were previously coming back with theta pinned
+        # at the upper bound and a flat prediction. polish=True finishes with a
+        # local L-BFGS-B refinement, so precision is not sacrificed.
+        from scipy.optimize import differential_evolution
+        best_result = differential_evolution(
+            objective, bounds,
+            seed=random_state, polish=True, tol=1e-8,
+            maxiter=1000, popsize=20, init='sobol')
+        best_cost = best_result.fun
+        best_start_idx = 0
         if verbose:
-            print(f"    Starting point {idx+1}/{len(starting_points)}...", end='')
-        
-        # Test initial cost
-        initial_cost = objective(x0)
-        result = minimize(objective, x0, method='L-BFGS-B',
-                          bounds=bounds, options={'maxiter':1000,
-                                                  'maxfun': 5000, 
-                                                  'ftol':1e-12,      # Tighter tolerance
-                                                  'gtol': 1e-10,     # Tighter gradient tolerance
-                                                  'eps': 1e-6,       # Larger step size for gradient estimation
-                                                  'finite_diff_rel_step': 1e-4})     # Larger relative step
-        
-        if verbose:
-            status = "✓" if result.success else "✗"
-            print(f"{status} cost: {initial_cost:.1f} → {result.fun:.1f} "
-                  f"({result.nfev} evals, {result.nit} iters)")
-        
-        if result.fun < best_cost:
-            best_cost = result.fun
-            best_result = result
-            best_start_idx = idx
-    
+            print(f"    Global search: cost → {best_result.fun:.1f} "
+                  f"({best_result.nfev} evals)")
+    else:
+        # Generate starting points
+        if use_multiple_starts:
+            rng = np.random.default_rng(random_state)
+            starting_points = [[rng.uniform(b[0], b[1]) for b in bounds]
+                               for _ in range(n_starts)]
+        else:
+            starting_points = [x0_default]
+
+        # Try each starting point
+        for idx, x0 in enumerate(starting_points):
+            if verbose:
+                print(f"    Starting point {idx+1}/{len(starting_points)}...", end='')
+
+            # Test initial cost
+            initial_cost = objective(x0)
+            result = minimize(objective, x0, method='L-BFGS-B',
+                              bounds=bounds, options={'maxiter':1000,
+                                                      'maxfun': 5000,
+                                                      'ftol':1e-12,      # Tighter tolerance
+                                                      'gtol': 1e-10,     # Tighter gradient tolerance
+                                                      'eps': 1e-6,       # Larger step size for gradient estimation
+                                                      'finite_diff_rel_step': 1e-4})     # Larger relative step
+
+            if verbose:
+                status = "✓" if result.success else "✗"
+                print(f"{status} cost: {initial_cost:.1f} → {result.fun:.1f} "
+                      f"({result.nfev} evals, {result.nit} iters)")
+
+            if result.fun < best_cost:
+                best_cost = result.fun
+                best_result = result
+                best_start_idx = idx
+
     # Package results
     if best_result is not None and best_result.success:
         if optimize_theta:
@@ -566,7 +949,13 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
             'n_points': len(time_data),
             'n_evals': best_result.nfev,
             'n_iters': best_result.nit,
-            'best_start_index': best_start_idx
+            'best_start_index': best_start_idx,
+            # Any parameter sitting on a bound means the bound, not the data,
+            # picked that value -- treat such a fit as suspect.
+            'at_bounds': [name for name, val, (lo, hi)
+                          in zip(param_names, best_result.x, bounds)
+                          if abs(val - lo) < 1e-6 * max(1.0, abs(lo))
+                          or abs(val - hi) < 1e-6 * max(1.0, abs(hi))]
         }
 
         # Re-run model once to get predictions for storage
@@ -575,27 +964,39 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
         'gamma_bar': gamma_bar,
         'theta': theta
         }
-        t_span = (time_data[0], time_data[-1])
-        y0 = [0.0]
 
         try:
-            print(f"    Re-running model to save predictions...")
-            sol = solve_ivp(cecchi2012_simplified, t_span, y0,
-                            args=(model_params, temp_func),
-                            t_eval=time_data, method='RK45',
-                            rtol=1e-4, atol=1e-6)
-            if sol.success:
-                model_pain = np.maximum(sol.y[0], 0.0)
-                model_pain[model_pain > 100.0] = 100.0 # Cap at 100
+            if verbose:
+                print(f"    Re-running model to save predictions...")
+            predictions = simulate_trials_analytic(model_params, trials)
+            if predictions is not None:
+                model_pain = np.concatenate(predictions)
                 best_params['model_data'] = {
                     'time': time_data,
                     'predicted_pain': model_pain,
                     'observed_pain': pain_data,
-                    'temperature': temp_data
+                    'temperature': temp_data,
+                    'trial_num': trial_index
                 }
-                print(f"    ✅ Model data saved successfully!")
+                # Whole-subject fit. 'r' is the zero-lag correlation Cecchi
+                # 2012 reports, so it is the number comparable to their
+                # 0.92 / 0.88 for the first-order model.
+                best_params.update(fit_metrics(pain_data, model_pain))
+
+                # Per-trial fit quality: the input for asking whether the
+                # model fails on particular trial types, in particular groups,
+                # or progressively across repeated trials.
+                best_params['trial_fits'] = [
+                    {'trial_num': trial['trial_num'],
+                     'trial_type': trial.get('trial_type'),
+                     'n_points': len(pred),
+                     **fit_metrics(trial['pain'], pred)}
+                    for trial, pred in zip(trials, predictions)
+                ]
+                if verbose:
+                    print(f"    ✅ Model data saved successfully!")
             else:
-                print(f"    ❌ Final model solve failed: {sol.message}")
+                print(f"    ❌ Final model solve failed")
         except Exception as e:
             print(f"    ❌ Error during final solve: {e}")
             import traceback
@@ -604,6 +1005,9 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
         if verbose:
             print(f"\n   ✅ Optimization successful (start #{best_start_idx+1}):")
             print(f"      ᾱ={alpha_bar:.4f}, γ̄={gamma_bar:.4f}, θ={theta:.2f}")
+            print(f"      r={best_params.get('r', np.nan):.3f} "
+                  f"(Cecchi 2012 report 0.92/0.88 for this model), "
+                  f"r²={best_params.get('r2', np.nan):.3f}")
             print(f"      MSE={best_result.fun:.2f} ({best_result.nfev} evals, {best_result.nit} iters)")
     else:
         if verbose:
@@ -618,7 +1022,278 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
 
 
 
-################## Plotting Functions ##################
+def seed_full_from_simplified(alpha_bar, gamma_bar, theta, scale=30.0):
+    """
+    Express a fitted Eq. 2 (first-order) parameter set as an equivalent point
+    in the full Eq. 1 parameter space.
+
+    Eq. 1 NESTS Eq. 2: making beta and lambda both large recovers the
+    simplification exactly. Setting beta = lambda = scale and
+
+        alpha = alpha_bar * scale,   gamma = gamma_bar
+
+    gives gamma*lambda/beta = gamma_bar and (T' - lambda) ~ -lambda, which is
+    the reduction. Verified against the analytic Eq. 2 solution: r agrees to
+    3-4 decimal places at scale = 30.
+
+    This is used for two things. It is a sensible starting point for the
+    five-parameter search, and more importantly it is a FLOOR: evaluating it
+    guarantees the full model is never scored worse than the simplified one.
+    That matters because the 5D search does not reliably converge on its own
+    -- widening the bounds once produced a *worse* fit for a subject, which is
+    impossible at a true optimum and so diagnostic of the optimiser stalling.
+    Without the floor, a reported "the full model is worse here" could be
+    optimiser noise rather than a fact about the data.
+
+    Petre 2017's published values are deliberately NOT used as the seed. Their
+    gamma*lambda is 3.45e-4, implying a decay time constant of ~106,000s -- on
+    a 60s trial that model rises and never returns, which is not what these
+    traces do. Those values come from a different study's group mean and sit
+    in a region of parameter space this data rules out.
+    """
+    return {'alpha': alpha_bar * scale,
+            'beta': scale,
+            'gamma': gamma_bar,
+            'lam': scale,
+            'theta': theta}
+
+
+def optimize_cecchi_full(subject_data, initial_params=None, bounds=None,
+                         popsize=12, maxiter=60, seed=0, verbose=True):
+    """
+    Fit the full second-order Cecchi 2012 model (Eq. 1) to one subject.
+
+    Parameters are [alpha, beta, gamma, lam, theta], fitted by differential
+    evolution as for Eq. 2 -- the objective has the same flat regions wherever
+    theta exceeds the hottest stimulus, so a gradient-following search stalls.
+
+    Two identifiability cautions worth carrying into the interpretation:
+
+      - gamma and lambda enter only as 'gamma*lambda' (the decay rate) and
+        'gamma' (the scale of the rate term). They can only be told apart
+        where the rate term measurably matters, so on trials with little
+        temperature movement they trade off against each other.
+      - beta sets a timescale of 1/beta, which for plausible values is ~0.03s.
+        The data are sampled at 1 Hz, so beta is constrained only indirectly,
+        through the shape of the slow envelope.
+
+    Returns (best_params, result) with the same keys as
+    optimize_cecchi_simplified, so downstream code can treat them alike.
+    """
+    from scipy.optimize import differential_evolution, minimize
+
+    trials = prepare_trials_for_optimization(subject_data)
+    if not trials:
+        if verbose:
+            print('    No usable trials for this subject.')
+        return None, None
+    packed = pack_trials(trials)
+    observed = packed['observed_flat']
+
+    if bounds is None:
+        bounds = [
+            (0.001, 500.0),   # alpha: drive. alpha/beta sets the rise rate
+            # beta: damping. The lower end matters -- small beta is the weakly
+            # damped, genuinely oscillatory regime, and in piloting that was
+            # where the full model actually beat Eq. 2 (one subject sat on a
+            # 0.5 floor and gained the most), so the floor is well below it.
+            # The ceiling is practical: integration substeps scale with beta,
+            # and 1 Hz data cannot constrain a timescale that fast regardless.
+            (0.05, 60.0),
+            (1e-4, 50.0),     # gamma: scale of the rate term
+            # lam: temperature rate above which a change counts as alarming
+            # (degC/s). Large lam makes (T' - lambda) effectively constant,
+            # which IS Cecchi's assumption (b) -- i.e. the full model
+            # collapsing back to Eq. 2. The ceiling is set high so that
+            # reaching it reads as the data preferring the simplified form,
+            # rather than as the optimiser running out of room. Fits that land
+            # there should be interpreted, not discarded: excluding them would
+            # keep only the subjects where the full model wins and inflate the
+            # model comparison.
+            (1e-4, 50.0),
+            (30.0, 52.0),     # theta: below the 32C baseline is meaningless
+        ]
+    names = ['alpha', 'beta', 'gamma', 'lam', 'theta']
+
+    def objective(x):
+        params = dict(zip(names, x))
+        try:
+            pred = full_predictions_flat(params, packed)
+            mse = np.mean((observed - pred) ** 2)
+            return mse if np.isfinite(mse) else 1e6
+        except Exception:
+            return 1e6
+
+    kwargs = dict(seed=seed, polish=True, tol=1e-6, init='sobol',
+                  popsize=popsize, maxiter=maxiter)
+    x0 = None
+    if initial_params is not None:
+        x0 = np.array([float(np.clip(initial_params[n], b[0], b[1]))
+                       for n, b in zip(names, bounds)])
+        try:
+            result = differential_evolution(objective, bounds, x0=x0, **kwargs)
+        except TypeError:      # older scipy has no x0
+            result = differential_evolution(objective, bounds, **kwargs)
+    else:
+        result = differential_evolution(objective, bounds, **kwargs)
+
+    if result is None or not np.isfinite(result.fun):
+        return None, result
+
+    # Eq. 1 nests Eq. 2, so the point equivalent to the subject's first-order
+    # fit is always available and the full model can never truly do worse.
+    # The 5D global search does not reliably reach the optimum on its own, so
+    # that point is polished locally and kept if it wins -- otherwise an
+    # apparent "the full model is worse for this subject" would just be the
+    # optimiser having stalled. Both candidates are scored on the same
+    # objective, so this only ever improves the answer.
+    best_x, best_fun = result.x, result.fun
+    if x0 is not None:
+        polished = minimize(objective, x0, method='L-BFGS-B', bounds=bounds)
+        for cand_x, cand_fun in ((x0, objective(x0)),
+                                 (polished.x, polished.fun)):
+            if np.isfinite(cand_fun) and cand_fun < best_fun:
+                best_x, best_fun = np.asarray(cand_x), float(cand_fun)
+        if verbose and best_fun < result.fun - 1e-9:
+            print(f'    (global search stalled; kept the Eq.2-seeded local fit, '
+                  f'MSE {result.fun:.1f} -> {best_fun:.1f})')
+
+    params = dict(zip(names, best_x))
+    predictions = simulate_trials_full(params, packed)
+    pred_flat = np.concatenate([predictions[i, :packed['lens'][i]]
+                                for i in range(len(trials))])
+
+    best = dict(params)
+    best.update(fit_metrics(observed, pred_flat))
+    best.update({
+        'success': bool(result.success),
+        'n_trials': len(trials),
+        'n_points': len(observed),
+        'n_evals': int(result.nfev),
+        'at_bounds': [n for n, v, (lo, hi) in zip(names, result.x, bounds)
+                      if abs(v - lo) < 1e-6 * max(1.0, abs(lo))
+                      or abs(v - hi) < 1e-6 * max(1.0, abs(hi))],
+        'trial_fits': [
+            {'trial_num': tr['trial_num'], 'trial_type': tr.get('trial_type'),
+             'n_points': packed['lens'][i],
+             **fit_metrics(tr['pain'], predictions[i, :packed['lens'][i]])}
+            for i, tr in enumerate(trials)],
+        'model_data': {
+            'time': np.concatenate([t['continuous_time'] for t in trials]),
+            'predicted_pain': pred_flat,
+            'observed_pain': observed,
+            'temperature': np.concatenate([t['temperature'] for t in trials]),
+            'trial_num': np.concatenate([np.full(len(t['time']), t['trial_num'])
+                                         for t in trials]),
+        },
+    })
+
+    if verbose:
+        print(f"    α={best['alpha']:.3f} β={best['beta']:.3f} "
+              f"γ={best['gamma']:.4f} λ={best['lam']:.4f} θ={best['theta']:.2f}")
+        print(f"    r={best['r']:.3f}  r²={best['r2']:.3f}  MSE={best['mse']:.1f} "
+              f"({result.nfev} evals)")
+        if best['at_bounds']:
+            print(f"    ⚠️  on bounds: {best['at_bounds']}")
+
+    return best, result
+
+
+################# Plotting Functions ##################
+def plot_subject_trials(subject_data, params, subject_uid=None, max_trials=12,
+                        ncols=4, save_path=None, show_temperature=True):
+    """
+    Plot observed vs model-predicted pain for each of a subject's trials.
+
+    One panel per trial, so the per-trial fit is visible rather than being
+    averaged away. Correlation is shown per panel because that is the measure
+    Cecchi 2012 reports, and it is computed per trial for the same reason --
+    pooling a subject's trials into one series also asks the model to get the
+    relative amplitude between trials right, which is a different (and harder)
+    question than whether it captures the shape within a trial.
+
+    Parameters:
+    -----------
+    subject_data : DataFrame
+        One subject's rows from the combined traces table.
+    params : dict
+        Fitted parameters with keys alpha_bar, gamma_bar, theta.
+    subject_uid : str, optional
+        Label for the figure title.
+    max_trials : int
+        Cap on panels, so a 24-trial subject does not produce an unreadable grid.
+    show_temperature : bool
+        Overlay the stimulus on a secondary axis.
+    """
+    trials = prepare_trials_for_optimization(subject_data)
+    if not trials:
+        print(f"No usable trials for {subject_uid}")
+        return None
+
+    model_params = {k: params[k] for k in ('alpha_bar', 'gamma_bar', 'theta')}
+    predictions = simulate_trials_analytic(model_params, trials)
+
+    n = min(len(trials), max_trials)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 2.8 * nrows),
+                             squeeze=False, sharey=True)
+
+    for i in range(nrows * ncols):
+        ax = axes[i // ncols][i % ncols]
+        if i >= n:
+            ax.axis('off')
+            continue
+
+        trial, pred = trials[i], predictions[i]
+        m = fit_metrics(trial['pain'], pred)
+
+        ax.plot(trial['time'], trial['pain'], color='k', lw=1.6, label='observed')
+        ax.plot(trial['time'], pred, color='crimson', lw=1.6, label='model')
+        ax.set_ylim(-5, 105)
+
+        if show_temperature:
+            ax2 = ax.twinx()
+            ax2.plot(trial['time'], trial['temperature'], color='0.6',
+                     lw=1.0, ls='--', zorder=0)
+            ax2.axhline(model_params['theta'], color='steelblue', lw=0.8,
+                        ls=':', zorder=0)
+            ax2.set_ylim(30, 52)
+            ax2.set_yticks([] if (i % ncols) != ncols - 1 else [32, 40, 48])
+            if (i % ncols) == ncols - 1:
+                ax2.set_ylabel('°C', color='0.5', fontsize=8)
+                ax2.tick_params(labelsize=7, colors='0.5')
+
+        title = f"trial {trial['trial_num']}"
+        if trial.get('trial_type'):
+            title += f" · {trial['trial_type']}"
+        ax.set_title(f"{title}\nr={m['r']:.2f}  r²={m['r2']:.2f}", fontsize=9)
+        ax.tick_params(labelsize=8)
+        if i % ncols == 0:
+            ax.set_ylabel('VAS')
+        if i // ncols == nrows - 1:
+            ax.set_xlabel('time (s)')
+        if i == 0:
+            ax.legend(fontsize=7, loc='upper left', framealpha=0.9)
+
+    overall = fit_metrics(np.concatenate([t['pain'] for t in trials]),
+                          np.concatenate(predictions))
+    per_trial_r = np.nanmedian([fit_metrics(t['pain'], p)['r']
+                                for t, p in zip(trials, predictions)])
+    fig.suptitle(
+        f"{subject_uid or 'subject'}  —  "
+        f"ᾱ={model_params['alpha_bar']:.2f}, γ̄={model_params['gamma_bar']:.3f}, "
+        f"θ={model_params['theta']:.1f}°C   |   "
+        f"median per-trial r={per_trial_r:.3f}, pooled r={overall['r']:.3f}",
+        fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"   saved {save_path}")
+    return fig
+
+
+
 def plot_optimization_fit(subject, optimization_results, save_path=None, figsize=(14,10)):
     """
     Plot observed vs. predicted pain using saved optimization results.

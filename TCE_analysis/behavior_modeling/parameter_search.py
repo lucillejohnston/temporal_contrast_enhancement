@@ -1,3 +1,9 @@
+"""
+NOTE: THIS IS OLD AND UNNECESSARY ANYMORE
+9/20/26
+"""
+
+
 #%%
 import pandas as pd
 import sys, time, pickle, random, os
@@ -81,8 +87,8 @@ N_STARTS = 5  # Number of random starts per subject
 OPTIMIZE_THETA = False  # Use data-derived thresholds (set to True to optimize theta too)
 # Output paths
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-CHECKPOINT_DIR = DATA_PATH
-RESULTS_FILE = f"{CHECKPOINT_DIR}optimization_results_{timestamp}.pkl"
+RESULTS_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/behavior_modeling/model_fit_results/'
+RESULTS_FILE = f"{RESULTS_PATH}optimization_results_{timestamp}.pkl"
 
 print(f"\n{'='*60}")
 print(f"🚀 OPTIMIZATION CONFIGURATION")
