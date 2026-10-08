@@ -56,6 +56,18 @@ TRACES_FILE = DATA_PATH + 'combined_traces_1Hz.pkl'
 MIN_POINTS = 5     # r on fewer than this is not worth computing
 MIN_PAIN_SD = 2.0  # VAS; a flat window has no correlation to speak of
 
+# kneeOA was stimulated at forearm and knee; everything here is forearm, which
+# is what extract_metrics.py (and so the period boundaries) assumes, and what
+# makes kneeOA comparable to the single-site plosONE and cLBP.
+SITE = 'forearm'
+
+# The Eq. 1 fits predate the site split. For plosONE and cLBP that is harmless
+# -- single site, unchanged traces -- but kneeOA's Eq. 1 fits were run on
+# forearm and knee pooled, while sharing a key with the new forearm-only Eq. 2
+# fits. Joining them would compare a forearm fit against a pooled one without
+# any warning, so kneeOA is dropped from the Eq. 1 columns until it is refit.
+EQ1_STALE_DATASETS = ['kneeOA']
+
 STAMP = f'{datetime.now():%Y%m%d}'
 OUT_CSV = RESULTS_PATH + f'{STAMP}_period_metrics.csv'
 
@@ -69,10 +81,29 @@ data_df = pd.read_pickle(TRACES_FILE)
 simple_csv = [f for f in sorted(glob.glob(RESULTS_PATH + '*model_fits_subject_*.csv'))
               if 'full' not in os.path.basename(f)][-1]
 full_csv = sorted(glob.glob(RESULTS_PATH + '*_model_fits_subject_full.csv'))[-1]
-simple = pd.read_csv(simple_csv).set_index('subject_uid')
-full = pd.read_csv(full_csv).set_index('subject_uid')
+simple = pd.read_csv(simple_csv)
+full = pd.read_csv(full_csv)
 print(f'Eq. 2 fits : {os.path.basename(simple_csv)} ({len(simple)})')
 print(f'Eq. 1 fits : {os.path.basename(full_csv)} ({len(full)})')
+
+# Fits carried forward from an earlier run predate the site columns; they are
+# all single-site forearm and their fit unit is just the subject id.
+if 'site' not in simple.columns:
+    simple['site'] = SITE
+simple['site'] = simple['site'].fillna(SITE)
+if 'subject' not in simple.columns:
+    simple['subject'] = simple['subject_uid']
+simple['subject'] = simple['subject'].fillna(simple['subject_uid'])
+
+before = len(simple)
+simple = simple[simple['site'] == SITE]
+print(f'site filter ({SITE}): {before} -> {len(simple)} fits')
+
+full = full[~full['dataset'].isin(EQ1_STALE_DATASETS)]
+print(f'Eq. 1 usable (excluding {EQ1_STALE_DATASETS} as pre-site-split): {len(full)}')
+
+simple = simple.set_index('subject_uid')
+full = full.set_index('subject_uid')
 
 rows = []
 for ds in ['plosONE', 'kneeOA', 'cLBP']:
@@ -106,23 +137,28 @@ PERIODS = ['A', 'B', 'C']
 # cheap (Eq. 2 is a closed form; Eq. 1 is ~30ms per subject).
 out = []
 missing_bounds = 0
-uids = sorted(set(simple.index) & set(full.index))
-print(f'\nscoring {len(uids)} subjects present in both fits...')
+data_df = data_df[data_df['site'].fillna(SITE) == SITE]
+uids = sorted(simple.index)
+has_eq1 = set(full.index)
+print(f'\nscoring {len(uids)} {SITE} fits '
+      f'({len(set(uids) & has_eq1)} of them also have a usable Eq. 1 fit)...')
 
 for i, uid in enumerate(uids):
-    sd = data_df[data_df['subject_uid'] == uid]
+    sd = data_df[data_df['subject_uid'] == uid]   # forearm units keep the plain id
     trials = prepare_trials_for_optimization(sd)
     if not trials:
         continue
 
-    s, f = simple.loc[uid], full.loc[uid]
+    s = simple.loc[uid]
     pred2 = simulate_trials_analytic(
         {'alpha_bar': s['alpha_bar'], 'gamma_bar': s['gamma_bar'],
          'theta': s['theta']}, trials)
-    packed = pack_trials(trials)
-    pred1_mat = simulate_trials_full(
-        {'alpha': f['alpha'], 'beta': f['beta'], 'gamma': f['gamma'],
-         'lam': f['lam'], 'theta': f['theta']}, packed)
+    pred1_mat = None
+    if uid in has_eq1:
+        f = full.loc[uid]
+        pred1_mat = simulate_trials_full(
+            {'alpha': f['alpha'], 'beta': f['beta'], 'gamma': f['gamma'],
+             'lam': f['lam'], 'theta': f['theta']}, pack_trials(trials))
 
     dataset = sd['dataset'].iloc[0]
     subject_orig = int(sd['subject_orig'].iloc[0])
@@ -131,7 +167,7 @@ for i, uid in enumerate(uids):
         t = tr['time']
         obs = tr['pain']
         p2 = pred2[j]
-        p1 = pred1_mat[j, :len(t)]
+        p1 = pred1_mat[j, :len(t)] if pred1_mat is not None else None
 
         base = {'subject_uid': uid, 'dataset': dataset, 'study': sd['study'].iloc[0],
                 'group_label': sd['group_label'].iloc[0],
@@ -159,10 +195,12 @@ for i, uid in enumerate(uids):
                    't_end': float(t[mask][-1]) if n else np.nan}
             if n >= MIN_POINTS:
                 m2 = fit_metrics(o, p2[mask])
-                m1 = fit_metrics(o, p1[mask])
                 row.update({'r_eq2': m2['r'], 'r2_eq2': m2['r2'], 'mse_eq2': m2['mse'],
-                            'r_eq1': m1['r'], 'r2_eq1': m1['r2'], 'mse_eq1': m1['mse'],
                             'obs_range': float(o.max() - o.min())})
+                if p1 is not None:
+                    m1 = fit_metrics(o, p1[mask])
+                    row.update({'r_eq1': m1['r'], 'r2_eq1': m1['r2'],
+                                'mse_eq1': m1['mse']})
             out.append(row)
 
     if (i + 1) % 50 == 0:

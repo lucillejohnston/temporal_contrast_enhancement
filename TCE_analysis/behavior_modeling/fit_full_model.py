@@ -45,6 +45,15 @@ RESULTS_PATH = ('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Py
                 'model_fit_results/')
 TRACES_FILE = DATA_PATH + 'combined_traces_1Hz.pkl'
 
+# kneeOA was stimulated at forearm and knee, so the unit of fitting is
+# (subject, site) rather than subject -- the same convention as
+# Psychophysical_Modeling.py, which is where the seeds come from. Without it a
+# kneeOA subject gets one parameter set straddling two body regions.
+#
+# SITES = ['forearm'] halves the kneeOA work and keeps it comparable to the
+# single-site plosONE and cLBP; None fits every site.
+SITES = None
+
 # Set to a small number for a pilot; None fits everyone.
 N_SUBJECTS = None
 POPSIZE = 12        # differential evolution population = POPSIZE * 5 params
@@ -63,17 +72,53 @@ TRIAL_CSV = RESULTS_PATH + f'{STAMP}_model_fits_trial_full.csv'
 # ------------------------------------------------------------------
 data_df = pd.read_pickle(TRACES_FILE)
 
+# Same fitting unit as Psychophysical_Modeling.py: forearm keeps the plain
+# subject id, any other site carries an '@site' suffix. The Eq. 2 seed table is
+# keyed the same way, so the two line up without a translation step.
+if 'site' not in data_df.columns:
+    data_df['site'] = 'forearm'
+data_df['site'] = data_df['site'].fillna('forearm')
+data_df['fit_unit'] = np.where(data_df['site'] == 'forearm',
+                               data_df['subject_uid'],
+                               data_df['subject_uid'] + '@' + data_df['site'])
+if SITES is not None:
+    n_before = data_df['fit_unit'].nunique()
+    data_df = data_df[data_df['site'].isin(SITES)]
+    print(f'site filter {SITES}: {n_before} -> '
+          f'{data_df["fit_unit"].nunique()} fitting units')
+
 # Most recent first-order fit. Petre 2017's published parameters are not used
 # as a seed -- see seed_full_from_simplified() for why.
 simple_csv = sorted(glob.glob(RESULTS_PATH + '*model_fits_subject_*.csv'))
 simple_csv = [f for f in simple_csv if 'full' not in os.path.basename(f)][-1]
 simple = pd.read_csv(simple_csv).set_index('subject_uid')
 print(f'traces : {os.path.basename(TRACES_FILE)} '
-      f'({data_df["subject_uid"].nunique()} subjects, '
-      f'{data_df.groupby(["subject_uid", "trial_num"]).ngroups:,} trials)')
-print(f'seeds  : {os.path.basename(simple_csv)} ({len(simple)} subjects)')
+      f'({data_df["fit_unit"].nunique()} fitting units, '
+      f'{data_df.groupby(["fit_unit", "trial_num"]).ngroups:,} trials)')
+print(f'seeds  : {os.path.basename(simple_csv)} ({len(simple)} fits)')
 
-subjects_to_fit = sorted(simple.index)
+# Only fit units that have both traces and an Eq. 2 seed. A seed row with no
+# matching traces means a stale fit table, and is reported rather than skipped
+# silently -- that is how the pooled-site fits would have slipped through.
+available = set(data_df['fit_unit'].unique())
+subjects_to_fit = sorted(set(simple.index) & available)
+orphan_seeds = sorted(set(simple.index) - available)
+if orphan_seeds:
+    # A seed with no traces is expected when SITES excludes that site, and a
+    # problem otherwise -- those two want different reactions, so they are
+    # reported differently rather than under one warning.
+    if SITES is not None:
+        excluded = [u for u in orphan_seeds if '@' in u or SITES != ['forearm']]
+        print(f'   {len(excluded)} seed rows skipped by the site filter')
+        orphan_seeds = [u for u in orphan_seeds if u not in set(excluded)]
+    if orphan_seeds:
+        print(f'⚠️  {len(orphan_seeds)} seed rows have no matching traces at all '
+              f'(stale fit table?): {orphan_seeds[:4]}'
+              f'{" ..." if len(orphan_seeds) > 4 else ""}')
+no_seed = sorted(available - set(simple.index))
+if no_seed:
+    print(f'⚠️  {len(no_seed)} fitting units have no Eq. 2 seed and are skipped: '
+          f'{no_seed[:4]}{" ..." if len(no_seed) > 4 else ""}')
 if N_SUBJECTS is not None:
     subjects_to_fit = subjects_to_fit[:N_SUBJECTS]
 
@@ -101,7 +146,7 @@ for i, uid in enumerate(subjects_to_fit):
     if uid in results:
         continue
 
-    sd = data_df[data_df['subject_uid'] == uid]
+    sd = data_df[data_df['fit_unit'] == uid]
     row = simple.loc[uid]
     seed_params = seed_full_from_simplified(row['alpha_bar'], row['gamma_bar'],
                                             row['theta'])
@@ -122,6 +167,8 @@ for i, uid in enumerate(subjects_to_fit):
 
     best['dataset'] = row['dataset']
     best['study'] = row['study']
+    best['site'] = sd['site'].iloc[0]
+    best['subject'] = sd['subject_uid'].iloc[0]
     best['group_label'] = row['group_label']
     # the Eq. 2 fit for this subject, so the two models can be compared
     # without re-merging later
@@ -152,7 +199,8 @@ print(f'\nfitted {len(results)} subjects in {(time.time()-t_start)/3600:.2f} h')
 # ------------------------------------------------------------------
 subject_rows, trial_rows = [], []
 for uid, p in results.items():
-    base = {'subject_uid': uid, 'dataset': p.get('dataset'),
+    base = {'subject_uid': uid, 'subject': p.get('subject'),
+            'site': p.get('site'), 'dataset': p.get('dataset'),
             'study': p.get('study'), 'group_label': p.get('group_label')}
     subject_rows.append({
         **base,
@@ -161,6 +209,7 @@ for uid, p in results.items():
         'r': p['r'], 'r2': p['r2'], 'mse': p['mse'], 'sse': p['sse'],
         'n_trials': p['n_trials'], 'n_points': p['n_points'],
         'at_bounds': ','.join(p.get('at_bounds') or []),
+        'site': p.get('site'), 'subject': p.get('subject'),
         # matched Eq. 2 result for the model comparison
         'r_simplified': p.get('r_simplified'),
         'alpha_bar_simplified': p.get('alpha_bar_simplified'),

@@ -10,8 +10,18 @@ the traces. Subjects are addressed by 'subject_uid' (e.g. 'cLBP_0201'), not by
 the raw within-study number -- those collide across datasets, and inside cLBP
 they collide across substudies.
 
+
+Notes: 
+This script only fits the simplified Cecchi 2012 model which runs faster
+Use fit_full_model.py to fit the full Cecchi 2012 model which takes longer
+
+This script fits one set of parameters per subject
+Use per_trial_fits.py to fit one set of parameters per trial 
+
+Run analyze_model_fits.py after this to look more detail into the model performance
+
 Author: Lucille Johnston
-Updated: 9/19/26
+Updated: 10/05/26
 """
 #%%
 import pandas as pd
@@ -30,16 +40,10 @@ DATA_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python
 FIG_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/behavior_modeling/figures/' # path for saving figures
 RESULTS_PATH = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/' # path for saving fit results
 
-# Load the combined 1Hz traces (pd.read_pickle handles the file open; plain
-# pickle.load() needs a file object, not a path)
 data_df = pd.read_pickle(DATA_PATH)
 
-# A kneeOA subject was stimulated at two sites, forearm and knee, and the
-# dynamics at an affected joint need not match those at the forearm. Fitting
-# one parameter set across both would force a single alpha/gamma/theta to
-# straddle two body regions, so the unit of fitting is (subject, site) rather
-# than subject. Datasets with a single site are unaffected -- their fit_unit is
-# just the subject.
+# kneeOA subjects were tested at two sites, forearm and knee
+# Fit the two sites separately
 data_df['fit_unit'] = np.where(
     data_df['site'].fillna('forearm') == 'forearm',
     data_df['subject_uid'],
@@ -82,82 +86,82 @@ if missing_theta:
     print(f"\n⚠️  No threshold (VAS never reached 5) for {len(missing_theta)} subjects:")
     print(f"    {missing_theta}")
 
-#%%
-# ==================================================================
-# Method-of-limits thresholds -- plosONE only, disabled for now
-# ==================================================================
-# combined_data.sqlite only holds threshold_data for plosONE, so
-# 'threshold_limits' is populated for those 137 subjects and NaN everywhere
-# else. The previous version of this block compared against limits_data.csv
-# keyed on the raw subject number, which silently matched kneeOA and cLBP
-# subjects to unrelated plosONE values.
-#
-# When limits data turns up for the other datasets, add rows to the
-# threshold_data table in combined_data.sqlite, re-run build_combined_traces.py,
-# and this block works as-is -- nothing in it is plosONE-specific.
-COMPARE_THRESHOLD_METHODS = False
+# #%%
+# # ==================================================================
+# # Limits thresholds -- plosONE only, disabled for now
+# # ==================================================================
+# # combined_data.sqlite only holds threshold_data for plosONE, so
+# # 'threshold_limits' is populated for those 137 subjects and NaN everywhere
+# # else. The previous version of this block compared against limits_data.csv
+# # keyed on the raw subject number, which silently matched kneeOA and cLBP
+# # subjects to unrelated plosONE values.
+# #
+# # When limits data turns up for the other datasets, add rows to the
+# # threshold_data table in combined_data.sqlite, re-run build_combined_traces.py,
+# # and this block works as-is -- nothing in it is plosONE-specific.
+# COMPARE_THRESHOLD_METHODS = False
 
-if COMPARE_THRESHOLD_METHODS:
-    limits = (data_df.groupby('subject_uid')
-              .agg(threshold_from_limits=('threshold_limits', 'first'),
-                   dataset=('dataset', 'first')))
-    comparison_df = limits.join(thresholds).reset_index()
-    comparison_df['difference'] = (comparison_df['threshold_from_limits']
-                                   - comparison_df['threshold_from_data'])
-    comparison_df = comparison_df.dropna(subset=['threshold_from_limits',
-                                                 'threshold_from_data'])
-    print(f"\nComparing threshold methods for {len(comparison_df)} subjects "
-          f"in {sorted(comparison_df['dataset'].unique())}")
+# if COMPARE_THRESHOLD_METHODS:
+#     limits = (data_df.groupby('subject_uid')
+#               .agg(threshold_from_limits=('threshold_limits', 'first'),
+#                    dataset=('dataset', 'first')))
+#     comparison_df = limits.join(thresholds).reset_index()
+#     comparison_df['difference'] = (comparison_df['threshold_from_limits']
+#                                    - comparison_df['threshold_from_data'])
+#     comparison_df = comparison_df.dropna(subset=['threshold_from_limits',
+#                                                  'threshold_from_data'])
+#     print(f"\nComparing threshold methods for {len(comparison_df)} subjects "
+#           f"in {sorted(comparison_df['dataset'].unique())}")
 
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+#     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
 
-    # Histogram of thresholds from trial data
-    ax1.hist(comparison_df['threshold_from_data'], bins=15, alpha=0.7,
-             color='blue', edgecolor='black')
-    ax1.set_xlabel('Threshold Temperature (°C)')
-    ax1.set_ylabel('Number of Subjects')
-    ax1.set_title('Thresholds from Trial Data')
-    ax1.grid(True, alpha=0.3)
+#     # Histogram of thresholds from trial data
+#     ax1.hist(comparison_df['threshold_from_data'], bins=15, alpha=0.7,
+#              color='blue', edgecolor='black')
+#     ax1.set_xlabel('Threshold Temperature (°C)')
+#     ax1.set_ylabel('Number of Subjects')
+#     ax1.set_title('Thresholds from Trial Data')
+#     ax1.grid(True, alpha=0.3)
 
-    # Histogram of thresholds from limits data
-    ax2.hist(comparison_df['threshold_from_limits'], bins=15, alpha=0.7,
-             color='red', edgecolor='black')
-    ax2.set_xlabel('Threshold Temperature (°C)')
-    ax2.set_ylabel('Number of Subjects')
-    ax2.set_title('Thresholds from Limits Data')
-    ax2.grid(True, alpha=0.3)
+#     # Histogram of thresholds from limits data
+#     ax2.hist(comparison_df['threshold_from_limits'], bins=15, alpha=0.7,
+#              color='red', edgecolor='black')
+#     ax2.set_xlabel('Threshold Temperature (°C)')
+#     ax2.set_ylabel('Number of Subjects')
+#     ax2.set_title('Thresholds from Limits Data')
+#     ax2.grid(True, alpha=0.3)
 
-    # Scatter plot comparison
-    correlation = comparison_df['threshold_from_data'].corr(
-        comparison_df['threshold_from_limits'])
-    ax3.scatter(comparison_df['threshold_from_data'],
-                comparison_df['threshold_from_limits'], alpha=0.7)
-    min_val = min(comparison_df['threshold_from_data'].min(),
-                  comparison_df['threshold_from_limits'].min())
-    max_val = max(comparison_df['threshold_from_data'].max(),
-                  comparison_df['threshold_from_limits'].max())
-    ax3.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5, label='Unity')
-    ax3.set_xlabel('Threshold from Trial Data (°C)')
-    ax3.set_ylabel('Threshold from Limits Data (°C)')
-    ax3.set_title(f'Comparing Thresholds (r={correlation:.2f})')
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
+#     # Scatter plot comparison
+#     correlation = comparison_df['threshold_from_data'].corr(
+#         comparison_df['threshold_from_limits'])
+#     ax3.scatter(comparison_df['threshold_from_data'],
+#                 comparison_df['threshold_from_limits'], alpha=0.7)
+#     min_val = min(comparison_df['threshold_from_data'].min(),
+#                   comparison_df['threshold_from_limits'].min())
+#     max_val = max(comparison_df['threshold_from_data'].max(),
+#                   comparison_df['threshold_from_limits'].max())
+#     ax3.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5, label='Unity')
+#     ax3.set_xlabel('Threshold from Trial Data (°C)')
+#     ax3.set_ylabel('Threshold from Limits Data (°C)')
+#     ax3.set_title(f'Comparing Thresholds (r={correlation:.2f})')
+#     ax3.legend()
+#     ax3.grid(True, alpha=0.3)
 
-    # Difference histogram
-    ax4.hist(comparison_df['difference'], bins=15, alpha=0.7,
-             color='purple', edgecolor='black')
-    ax4.axvline(x=0, color='r', linestyle='--', label='No Difference')
-    ax4.axvline(x=comparison_df['difference'].mean(), color='b', linestyle='-',
-                label=f'Mean: {comparison_df["difference"].mean():+.2f}°C')
-    ax4.set_xlabel('Difference (Limits - Data) (°C)')
-    ax4.set_ylabel('Number of Subjects')
-    ax4.set_title('Distribution of Differences')
-    ax4.legend()
-    ax4.grid(True, alpha=0.3)
+#     # Difference histogram
+#     ax4.hist(comparison_df['difference'], bins=15, alpha=0.7,
+#              color='purple', edgecolor='black')
+#     ax4.axvline(x=0, color='r', linestyle='--', label='No Difference')
+#     ax4.axvline(x=comparison_df['difference'].mean(), color='b', linestyle='-',
+#                 label=f'Mean: {comparison_df["difference"].mean():+.2f}°C')
+#     ax4.set_xlabel('Difference (Limits - Data) (°C)')
+#     ax4.set_ylabel('Number of Subjects')
+#     ax4.set_title('Distribution of Differences')
+#     ax4.legend()
+#     ax4.grid(True, alpha=0.3)
 
-    plt.tight_layout()
-    plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_thresholdComparison.png', dpi=150)
-    plt.show()
+#     plt.tight_layout()
+#     plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_thresholdComparison.png', dpi=150)
+#     plt.show()
 
 #%%
 # Configuration for optimization approach
@@ -168,11 +172,7 @@ OPTIMIZER = 'de'            # 'de' = differential evolution (global). The object
                             # which strands a gradient-following search.
 USE_MULTIPLE_STARTS = True  # only used when OPTIMIZER = 'multistart'
 N_STARTS = 10               # only used when OPTIMIZER = 'multistart'
-OPTIMIZE_THETA = True       # Fit theta, as Cecchi 2012 do. The data-derived
-                            # threshold (temperature at which VAS first passes 5)
-                            # overestimates it, because it includes the ~2.8s the
-                            # subject takes to move the slider. Fitted values are
-                            # validated against subject_thresholds_from_data below.
+OPTIMIZE_THETA = True       # Fit theta, as Cecchi 2012 do 
 TRIAL_TYPES = None          # None = all trial types, or e.g. ['offset', 'onset']
 
 # Output paths
@@ -207,16 +207,16 @@ print(f"{'='*60}\n")
 # Initialize results dictionary
 optimization_results = {}
 
-# Try to load existing checkpoint
-PREV_RESULTS_FILE = sorted(glob.glob(RESULTS_PATH + 'optimization_results_*.pkl'))[-1]
-if os.path.exists(PREV_RESULTS_FILE):
-    try:
-        with open(PREV_RESULTS_FILE, 'rb') as f:
-            checkpoint_data = pickle.load(f)
-            optimization_results = checkpoint_data.get('optimization_results', {})
-        print(f"📂 Loaded checkpoint with {len(optimization_results)} subjects already processed\n")
-    except Exception as e:
-        print(f"⚠️  Could not load checkpoint: {e}\n")
+# # Try to load existing checkpoint
+# PREV_RESULTS_FILE = sorted(glob.glob(RESULTS_PATH + 'optimization_results_*.pkl'))[-1]
+# if os.path.exists(PREV_RESULTS_FILE):
+#     try:
+#         with open(PREV_RESULTS_FILE, 'rb') as f:
+#             checkpoint_data = pickle.load(f)
+#             optimization_results = checkpoint_data.get('optimization_results', {})
+#         print(f"📂 Loaded checkpoint with {len(optimization_results)} subjects already processed\n")
+#     except Exception as e:
+#         print(f"⚠️  Could not load checkpoint: {e}\n")
 
 #%%
 # Time a single subject before committing to the full run.
@@ -242,10 +242,6 @@ if TIME_ONE_SUBJECT:
           f"({probe_params['n_trials'] if probe_params else 0} trials)")
     print(f"   Projected for {len(subjects_to_process)} subjects: "
           f"{projected:.0f} min ({projected/60:.1f} h)")
-
-#%%
-# # Run deep dive on individual subjects
-# analyze_subject_data('plosONE_0033', data_df, detailed=True)
 
 #%%
 # Process each subject

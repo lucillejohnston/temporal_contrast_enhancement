@@ -1,23 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Where does the simplified Cecchi 2012 model fail?
-
-Reads the per-trial fit table written by Psychophysical_Modeling.py and asks
-three questions:
-
-  Q1  Is the model systematically worse on particular trial types?
-      (hypothesis: worse on 'onset' / OH trials)
-  Q2  Is it worse in pain groups than in controls?
-  Q3  Does it degrade across repeated trials within a session?
-
-Throughout, fit quality is the zero-lag Pearson correlation between observed
-and predicted pain, computed per trial -- the measure Cecchi 2012 report
-(0.92 simple / 0.88 complex stimuli). Correlations are Fisher z-transformed
-before averaging or modelling, because r is bounded at 1 and piles up near the
-ceiling, so means and variances on the raw scale are misleading.
+Looking into the results of the model fit
+Specifically the fit one set of parameters per subject model fit
+Check per_trial_fits to look at fits per trial 
 
 Author: Lucille Johnston
-Updated: 9/20/26
+Updated: 10/08/26
 """
 #%%
 import glob
@@ -44,28 +32,30 @@ TRACES_FILE = ('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Pyt
                'combined_traces_1Hz.pkl')
 
 # Trial types present in all three datasets. plosONE also carries
-# offset_AV_conditioning / offset_AV_test (an aversive conditioning paradigm),
-# kneeOA has innocuous, and plosONE has calibration / inv / stepdown -- none of
-# which have a counterpart elsewhere, so cross-dataset comparisons use these.
+# offset_AV_conditioning / offset_AV_test (a conditioning paradigm),
+# kneeOA has innocuous, and plosONE has calibration / inv / stepdown
 COMMON_TRIAL_TYPES = ['offset', 'onset', 't1_hold', 't2_hold']
 
 # Fits where a parameter landed on a bound were chosen by the bound rather
 # than by the data. Every result below is reported with and without them.
 DROP_AT_BOUNDS = True
 
+# kneeOA has forearm and knee and is fitted per site.
+# and the model comparison use forearm only, so kneeOA stays comparable to the
+# single-site plosONE and cLBP; the knee fits get their own paired section at
+# the end of this file.
+SITE = 'forearm'
 
 def fisher_z(r):
     """r -> z. Clipped because r = +/-1 maps to infinity."""
     return np.arctanh(np.clip(r, -0.9999, 0.9999))
 
-
 def inverse_fisher_z(z):
     return np.tanh(z)
 
-
 #%%
 # ------------------------------------------------------------------
-# Load
+# Load the data 
 # ------------------------------------------------------------------
 subject_csv = sorted(glob.glob(DATA_PATH + 'model_fits_subject_*.csv'))[-1]
 trial_csv = sorted(glob.glob(DATA_PATH + 'model_fits_trial_*.csv'))[-1]
@@ -76,8 +66,35 @@ subjects = pd.read_csv(subject_csv)
 trials = pd.read_csv(trial_csv)
 subjects['at_bounds'] = subjects['at_bounds'].fillna('')
 
+# separte the sites
+for frame in (subjects, trials):
+    if 'site' not in frame.columns:
+        frame['site'] = SITE
+    frame['site'] = frame['site'].fillna(SITE)
+    if 'subject' not in frame.columns:
+        frame['subject'] = frame['subject_uid']
+    frame['subject'] = frame['subject'].fillna(frame['subject_uid'])
+
+# Keep the full table for the paired site comparison at the end, then restrict
+# everything else to one site.
+subjects_all_sites, trials_all_sites = subjects.copy(), trials.copy()
+n_before = len(subjects)
+subjects = subjects[subjects['site'] == SITE]
+trials = trials[trials['site'] == SITE].copy()
+print(f'site filter ({SITE}): {n_before} -> {len(subjects)} subject fits')
+
 trials['r_z'] = fisher_z(trials['r'])
-trials = trials.dropna(subset=['r_z'])
+
+# trials where the rating or prediction is flat cannot be scored with r because there is no variance
+# flag them 
+unscorable = trials['r_z'].isna()
+if unscorable.any():
+    unscorable_pain_trials = unscorable & (trials['trial_type'] != 'innocuous')
+    print(f'\n{unscorable.sum()} trials unscorable with r '
+          f'({unscorable_pain_trials.sum()} of them supra-threshold):')
+    print(trials[unscorable].groupby(['dataset', 'trial_type'])
+          .size().to_string())
+trials = trials[~unscorable]
 
 flagged = set(subjects.loc[subjects['at_bounds'] != '', 'subject_uid'])
 print(f'\n{len(trials):,} trials from {trials["subject_uid"].nunique()} subjects')
@@ -90,16 +107,95 @@ if DROP_AT_BOUNDS:
 else:
     trials_main = trials.copy()
 
-print(f'\nOverall median r = {trials_main["r"].median():.3f} '
-      f'(Cecchi 2012: 0.92 / 0.88)')
+print(f'\nOverall median r = {trials["r"].median():.3f}  (all {trials["subject_uid"].nunique()} subjects)')
+print(f'                   {trials_main["r"].median():.3f}  '
+      f'(excluding {len(flagged)} bound-flagged)')
+print(f'                   Cecchi 2012: 0.92 simple / 0.88 complex stimuli')
 
-
-#%%
+# %%
 # ==================================================================
-# Q1. Is the model worse on particular trial types?
+# Explore the flagged subjects with parameters at the bounds
 # ==================================================================
 print('\n' + '=' * 70)
-print('Q1. FIT QUALITY BY TRIAL TYPE')
+print('SUBJECTS WITH PARAMETER ON A BOUND')
+print('=' * 70)
+
+# bounds match optimize_cecchi_simplified in psychophysics_modeling_functions
+BOUNDS = {'alpha_bar':(0.001, 50.0),
+          'gamma_bar':(0.001,3.0),
+          'theta':(30.0, 52.0)}
+
+at_bound = subjects[subjects['at_bounds']!= ''].copy()
+print(f'{len(at_bound)}/{len(subjects)} subjects ({len(at_bound)/len(subjects):.0%})\n')
+
+# Which end of which bound, since low and high mean different things
+hits = []
+for _, row in at_bound.iterrows():
+    for param in str(row['at_bounds']).split(','):
+        param = param.strip()
+        if param in BOUNDS:
+            lo, hi = BOUNDS[param]
+            end = 'lower' if abs(row[param] - lo) < abs(row[param] - hi) else 'upper'
+            hits.append({'subject_uid': row['subject_uid'],
+                         'dataset': row['dataset'], 'param': param,
+                         'end': end, 'value': row[param], 'r': row['r'],
+                         'n_trials': row['n_trials']})
+hits = pd.DataFrame(hits)
+print('which bound, and which end:')
+print(hits.groupby(['param', 'end']).agg(
+    n=('r', 'size'), median_r=('r', 'median')).round(3).to_string())
+print('\nby dataset:')
+print(hits.groupby(['dataset', 'param', 'end']).size().to_string())
+
+# Are these bad fits, or just extreme subjects? If their fit quality matches
+# everyone else's, the bound is a constraint on the parameter rather than a
+# symptom of failure, and excluding them is throwing away usable data.
+clean = subjects[subjects['at_bounds'] == '']
+print(f'\nfit quality, flagged vs not:')
+print(f'  on a bound : median r {at_bound["r"].median():.3f}  '
+      f'(n={len(at_bound)}, median {at_bound["n_trials"].median():.0f} trials)')
+print(f'  clean      : median r {clean["r"].median():.3f}  '
+      f'(n={len(clean)}, median {clean["n_trials"].median():.0f} trials)')
+u, p = stats.mannwhitneyu(at_bound['r'].dropna(), clean['r'].dropna())
+print(f'  Mann-Whitney p = {p:.3g}')
+
+print('\nFlagged subjects:')
+print(at_bound[['subject_uid', 'dataset', 'group_label', 'at_bounds',
+            'alpha_bar', 'gamma_bar', 'theta', 'r', 'n_trials']]
+      .sort_values('r').round(3).to_string(index=False))
+
+# Refit the bound-flagged subjects with much wider limits 
+import sys, os
+sys.path.append(os.path.dirname(os.path.abspath('.')))
+from psychophysics_modeling_functions import optimize_cecchi_simplified
+
+WIDE = [(1e-4, 5000.0), (1e-5, 50.0), (25.0, 55.0)]
+data_df = pd.read_pickle(TRACES_FILE)
+
+rows = []
+for uid in sorted(flagged):
+    sd = data_df[data_df['subject_uid'] == uid]
+    old = subjects.set_index('subject_uid').loc[uid]
+    new, _ = optimize_cecchi_simplified(sd, threshold=None, optimizer='de',
+                                        bounds=WIDE, verbose=False)
+    if new is None:
+        continue
+    rows.append({'subject_uid': uid, 'r_old': old['r'], 'r_new': new['r'],
+                 'alpha_old': old['alpha_bar'], 'alpha_new': new['alpha_bar'],
+                 'gamma_old': old['gamma_bar'], 'gamma_new': new['gamma_bar'],
+                 'theta_old': old['theta'], 'theta_new': new['theta'],
+                 'still_at_bound': ','.join(new['at_bounds'])})
+w = pd.DataFrame(rows)
+w['gain'] = w['r_new'] - w['r_old']
+print(w.round(3).to_string(index=False))
+print(f'\nimproved by >0.02: {(w.gain > 0.02).sum()}/{len(w)}')
+print(f'still on a bound : {(w.still_at_bound != "").sum()}/{len(w)}')
+#%%
+# ==================================================================
+# Is the model worse on particular trial types?
+# ==================================================================
+print('\n' + '=' * 70)
+print('FIT QUALITY BY TRIAL TYPE')
 print('=' * 70)
 
 by_type = (trials_main.groupby(['dataset', 'trial_type'])
@@ -512,6 +608,11 @@ else:
     full = pd.read_csv(FULL_SUBJECT_CSV[-1])
     full_trials = pd.read_csv(FULL_TRIAL_CSV[-1])
     full['at_bounds'] = full['at_bounds'].fillna('')
+    n_full = len(full)
+    full = full[~full['dataset'].isin(EQ1_STALE_DATASETS)]
+    full_trials = full_trials[~full_trials['dataset'].isin(EQ1_STALE_DATASETS)]
+    print(f'Eq. 1: dropped {EQ1_STALE_DATASETS} as pre-site-split '
+          f'({n_full} -> {len(full)} fits)')
     print('\n' + '=' * 70)
     print('MODEL COMPARISON: Eq. 1 (second-order) vs Eq. 2 (first-order)')
     print('=' * 70)
@@ -637,5 +738,120 @@ else:
     plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_model_comparison.png',
                 dpi=150, bbox_inches='tight')
     plt.show()
+
+
+#%%
+# ==================================================================
+# kneeOA only: the same person at the forearm and at the affected knee
+# ==================================================================
+# Every kneeOA subject was stimulated at both sites with the same protocol, so
+# this is a within-subject comparison -- each person is their own control, and
+# differences cannot be explained by who the subjects are. Earlier fits pooled
+# the two sites into one parameter set per subject, which both cost fit quality
+# (median r 0.849 pooled vs 0.879 forearm) and hid this contrast entirely.
+print('\n' + '=' * 70)
+print('kneeOA: FOREARM vs KNEE, WITHIN SUBJECT')
+print('=' * 70)
+
+knee_fits = subjects_all_sites[subjects_all_sites['dataset'] == 'kneeOA'].copy()
+if knee_fits['site'].nunique() < 2:
+    print('(only one site present in this fit table; skipping)')
+else:
+    paired = knee_fits.pivot_table(
+        index='subject', columns='site',
+        values=['r', 'r2', 'alpha_bar', 'gamma_bar', 'theta', 'mse']).dropna()
+    print(f'{len(paired)} subjects with a fit at both sites\n')
+
+    print(f'{"":12s}{"forearm":>10}{"knee":>10}{"median Δ":>11}'
+          f'{"Wilcoxon p":>13}{"n better at knee":>18}')
+    rows = []
+    for param, label in [('r', 'fit r'), ('alpha_bar', 'ᾱ drive'),
+                         ('gamma_bar', 'γ̄ decay'), ('theta', 'θ threshold')]:
+        a, b = paired[(param, 'forearm')], paired[(param, 'knee')]
+        stat, pval = stats.wilcoxon(a, b)
+        rows.append({'param': param, 'forearm': a.median(), 'knee': b.median(),
+                     'delta': (b - a).median(), 'p': pval})
+        print(f'{label:12s}{a.median():>10.3f}{b.median():>10.3f}'
+              f'{(b - a).median():>+11.3f}{pval:>13.2g}{(b > a).sum():>18d}')
+
+    # gamma_bar is a rate, so 1/gamma_bar is the time pain takes to fade --
+    # the interpretable form of whatever difference shows up above.
+    tc_f = 1.0 / paired[('gamma_bar', 'forearm')]
+    tc_k = 1.0 / paired[('gamma_bar', 'knee')]
+    print(f'\ndecay time constant 1/γ̄ (seconds for pain to fade):')
+    print(f'  forearm {tc_f.median():.2f}s   knee {tc_k.median():.2f}s   '
+          f'ratio {(tc_k / tc_f).median():.2f}x')
+
+    # Fit quality differs between sites, so a parameter difference could partly
+    # reflect the model describing the knee less well. Repeating the test on
+    # subjects fitted well at BOTH sites shows whether it survives.
+    WELL_FIT = 0.8
+    good = paired[(paired[('r', 'forearm')] >= WELL_FIT) &
+                  (paired[('r', 'knee')] >= WELL_FIT)]
+    print(f'\nRestricted to subjects with r >= {WELL_FIT} at both sites '
+          f'(n={len(good)}):')
+    for param, label in [('alpha_bar', 'ᾱ drive'), ('gamma_bar', 'γ̄ decay'),
+                         ('theta', 'θ threshold')]:
+        a, b = good[(param, 'forearm')], good[(param, 'knee')]
+        if len(good) < 10:
+            continue
+        _, pval = stats.wilcoxon(a, b)
+        print(f'  {label:12s} forearm {a.median():8.3f}   knee {b.median():8.3f}'
+              f'   p={pval:.2g}')
+
+    fig, axes = plt.subplots(1, 4, figsize=(17, 4.2))
+    for ax, (param, label) in zip(axes, [('r', 'fit quality (r)'),
+                                         ('alpha_bar', 'ᾱ  drive'),
+                                         ('gamma_bar', 'γ̄  decay rate'),
+                                         ('theta', 'θ  threshold (°C)')]):
+        a, b = paired[(param, 'forearm')], paired[(param, 'knee')]
+        for xa, xb in zip(a, b):
+            ax.plot([0, 1], [xa, xb], color='0.75', lw=0.6, zorder=1)
+        ax.scatter(np.zeros(len(a)), a, s=14, color='#3d6b8f', zorder=3, label='forearm')
+        ax.scatter(np.ones(len(b)), b, s=14, color='#b3202c', zorder=3, label='knee')
+        ax.plot([0, 1], [a.median(), b.median()], color='k', lw=2.2, zorder=4)
+        ax.set_xticks([0, 1]); ax.set_xticklabels(['forearm', 'knee'])
+        ax.set_xlim(-0.35, 1.35); ax.set_title(label)
+        if param in ('alpha_bar', 'gamma_bar'):
+            ax.set_yscale('log')
+    axes[0].legend(fontsize=8)
+    fig.suptitle(f'kneeOA, same subject at both sites (n={len(paired)}) — '
+                 'thick line joins the medians', fontsize=11)
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_kneeOA_site_comparison.png',
+                dpi=150, bbox_inches='tight')
+    plt.show()
+
+#%%
+# ==================================================================
+# Example fits: the same subject at each site
+# ==================================================================
+# Picked by how much gamma_bar moves between sites, so the plots show the
+# effect the test above reports rather than an arbitrary subject.
+if 'paired' in dir() and len(paired) > 2:
+    data_df_sites = pd.read_pickle(TRACES_FILE)
+    shift = ((paired[('gamma_bar', 'forearm')] - paired[('gamma_bar', 'knee')])
+             / paired[('gamma_bar', 'forearm')])
+    examples = {'largest site difference': shift.idxmax(),
+                'smallest site difference': shift.abs().idxmin()}
+    fits_by_unit = subjects_all_sites.set_index('subject_uid')
+
+    for label, subj in examples.items():
+        for site in ['forearm', 'knee']:
+            # forearm fits keep the plain subject id; knee carries the suffix
+            unit = subj if site == 'forearm' else f'{subj}@knee'
+            if unit not in fits_by_unit.index:
+                continue
+            f = fits_by_unit.loc[unit]
+            sd = data_df_sites[(data_df_sites['subject_uid'] == subj) &
+                               (data_df_sites['site'] == site)]
+            print(f'{label}: {subj} @ {site} — γ̄={f["gamma_bar"]:.3f}, '
+                  f'r={f["r"]:.3f}')
+            plot_subject_trials(
+                sd, {'alpha_bar': f['alpha_bar'], 'gamma_bar': f['gamma_bar'],
+                     'theta': f['theta']},
+                subject_uid=f'{subj} — {site}',
+                save_path=f'{FIG_PATH}{datetime.now():%Y%m%d}_site_example_'
+                          f'{subj}_{site}.png')
 
 # %%

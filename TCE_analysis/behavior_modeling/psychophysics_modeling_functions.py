@@ -14,7 +14,6 @@ import statsmodels.api as sm
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 from sklearn.metrics import r2_score
-import signal
 
 def plot_autocorrelations(df, lags=50):
     """
@@ -26,12 +25,14 @@ def plot_autocorrelations(df, lags=50):
     lags : int
         Number of lags to include in the plot.
     """
-    fig, ax = plt.subplots(figsize=(12, 6))
-    sm.graphics.tsa.plot_acf(df, lags=lags, ax=ax)
-    sm.graphics.tsa.plot_pacf(df, lags=lags, ax=ax)
-    plt.xlabel('Lag')
-    plt.ylabel('Autocorrelation')
-    plt.title('Autocorrelation Plot')
+    # One axis each: drawing both onto the same axes makes the second
+    # overwrite the first, which is what this previously did.
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    sm.graphics.tsa.plot_acf(df, lags=lags, ax=ax1)
+    sm.graphics.tsa.plot_pacf(df, lags=lags, ax=ax2)
+    ax1.set(title='Autocorrelation', ylabel='ACF')
+    ax2.set(title='Partial autocorrelation', xlabel='Lag', ylabel='PACF')
+    plt.tight_layout()
     plt.show()
 
 def extract_threshold_from_data(pain_data, vas_threshold=5): 
@@ -68,63 +69,6 @@ def extract_threshold_from_data(pain_data, vas_threshold=5):
 
 
 ################# Cecchi 2012 Model Functions #################
-# def cecchi2012_full(t, y, params, T_func, temp_derivative_func=None):
-#     """
-#     Cecchi 2012 model: p''(t) = αF(T(t),θ) - βp'(t) + γ(T'(t) - λ)p(t)
-    
-#     Parameters:
-#     t : float
-#         Time variable.
-#     y : list
-#         List containing [pain, pain_rate].
-#     params : dict
-#         Dictionary containing model parameters:
-#         - alpha: force scaling coefficient (subject-specific)
-#         - beta: damping coefficient (subject-specific)
-#         - gamma: temperature rate coefficient (subject-specific)
-#         - lambda_param: temperature rate threshold (subject-specific)
-#         - theta: temperature threshold for F(T,θ)
-#     T_func : callable
-#         Function that returns the temperature T(t) at time t
-
-#     temp_derivative_func : callable
-#         Function that returns the dT/dt at time t
-
-#     Returns:
-#     dydt : list
-#         List containing [pain_rate, pain_acceleration].
-#     """
-#     pain, pain_rate = y # Model's current predictions
-#     alpha = params['alpha']
-#     beta = params['beta'] 
-#     gamma = params['gamma']
-#     lambda_param = params['lambda_param']  # Using lambda_param since lambda is a Python keyword
-#     theta = params['theta']
-    
-#     # Current temperature
-#     T = T_func(t)
-    
-#     # Temperature derivative 
-#     if temp_derivative_func is not None:
-#         T_dt = temp_derivative_func(t)
-#     else:
-#         # Fallback to finite difference
-#         dt = 1e-6
-#         T_dt = (T_func(t + dt) - T_func(t)) / dt
-
-#     # Linear function F(T,θ) - pain level based on temperature above threshold theta
-#     if T > theta:
-#         F_T = T - theta
-#     else:
-#         F_T = 0.0 # no pain below threshold
-
-#     # Pain acceleration: p''(t) = αF(T(t),θ) - βp'(t) + γ(T'(t) - λ)p(t)
-#     pain_acceleration = ((alpha * F_T) - 
-#                          (beta * pain_rate) + 
-#                          (gamma * (T_dt - lambda_param) * pain))
-
-#     return [pain_rate, pain_acceleration]
-
 def cecchi2012_simplified(t, y, params, T_func):
     """
     Simplified Cecchi 2012: p'(t) = ᾱF(T(t),T₀) - γ̄p(t)
@@ -150,6 +94,20 @@ def cecchi2012_simplified(t, y, params, T_func):
     return [pain_rate]
 
 def prepare_data_for_optimization(subject_data):
+    """
+    SUPERSEDED -- kept only because parameter_search.py still calls it.
+
+    Concatenates all of a subject's trials into one continuous series with a
+    1s gap, for a single ODE solve across the whole thing. The modelling
+    pipeline uses prepare_trials_for_optimization() instead, which keeps the
+    trials separate so the model does not carry one trial's pain into the
+    start of the next.
+
+    parameter_search.py is itself superseded: it runs its own LSODA solves
+    with no max_step, which is the bug that made earlier fits meaningless
+    (see simulate_trials). Treat anything it produces as invalid, including
+    the parameter bounds it was once used to choose.
+    """
     # Prepare concatenated trial data
     trials = sorted(subject_data['trial_num'].unique())
     concatenated_data = []
@@ -521,227 +479,9 @@ def fit_metrics(observed, predicted):
 
 
 ################# Parameter Optimization Functions #################
-# def optimize_cecchi_full(subject_data, threshold=None, initial_params=None,
-#                          use_multiple_starts=False, n_starts=5, verbose=True):
-#     """
-#     Parameter optimization for the Full Cecchi 2012 model.
-#     Full model: p''(t) = αF(T(t),θ) - βp'(t) + γ(T'(t) - λ)p(t)
-#     Parameters to optimize: [alpha, beta, gamma, lambda_param] (and optionally theta)
-
-#     Parameters:
-#     subject_data : DataFrame
-#         Subject's task data with columns: 'aligned_time', 'temperature', 'pain', 'trial_num'
-#         Note: I'm going to have cut each trial off at 60s and downsampled to 5Hz before passing in here
-#     threshold : float, optional
-#         Subject's pain threshold (theta). If None, it will be optimized as well
-#     initial_params : dict, optional
-#         Starting parameter values. If None, uses Petre 2017 values.
-#     use_multiple_starts : bool
-#         If True, tries multiple random starting points
-#     n_starts : int
-#         Number of random starting points to try
-#     verbose : bool
-#         Print optimization progress
-    
-#     Returns:
-#     best_params : dict
-#         Optimized parameters with keys: alpha, beta, gamma, lambda_param, theta, mse, success
-#     best_result : OptimizeResult
-#         Full scipy optimization result object
-#     """
-#     from scipy.optimize import minimize
-#     # Default Petre 2017 parameters
-#     if initial_params is None:
-#         initial_params = {
-#             'alpha': 2.4932,
-#             'beta': 36.7552,
-#             'gamma': 0.0204,
-#             'lambda_param': 0.0169,
-#             'theta': 37.1913 if threshold is None else threshold
-#         }
-
-#     # Determine if we're optimizing theta
-#     optimize_theta = (threshold is None)
-#     if not optimize_theta and threshold is not None:
-#         initial_params['theta'] = threshold
-
-#     if verbose:
-#         print(f"\n FULL MODEL OPTIMIZAION")
-#         print(f"   Optimize theta: {optimize_theta}")
-#         print(f"   Multiple starts: {use_multiple_starts} (n={n_starts if use_multiple_starts else 1})")
-
-#     # Prepare concatenated trial data
-#     time_data, temp_data, pain_data, concatenated_data, temp_deriv_func = prepare_data_for_optimization(subject_data)
-
-#     if verbose:
-#         print(f"    Data: {len(time_data)} time points across {len(concatenated_data)} trials")
-#         print(f"    Pain range: {pain_data.min():.1f} to {pain_data.max():.1f}")
-
-#     # Create interpolation function for ODE solver
-#     temp_func = interp1d(time_data, temp_data, kind='linear',
-#                          bounds_error=False, fill_value='extrapolate')
-
-#     # Define objective function
-#     def objective(params_array):
-#         """ MSE between observed and predicted pain"""
-#         if optimize_theta:
-#             alpha, beta, gamma, lambda_param, theta = params_array
-#         else:
-#             alpha, beta, gamma, lambda_param = params_array
-#             theta = initial_params['theta']
-#         model_params = {
-#             'alpha': alpha,
-#             'beta': beta,
-#             'gamma': gamma,
-#             'lambda_param': lambda_param,
-#             'theta': theta
-#         }
-        
-#         t_span = (time_data[0], time_data[-1])
-#         y0 = [0.0, 0.0] # Initial [pain, pain rate]
-#         # Quick sanity check before expensive ODE solve
-#         if alpha <= 0 or beta <= 0 or gamma <= 0:
-#             return 1e6
-
-#         try:
-#             sol = solve_ivp(cecchi2012_full, t_span, y0,
-#                             args=(model_params, temp_func, temp_deriv_func),
-#                             t_eval=time_data, method='RK45', # Trying RK45 to see if it is faster than LSODA
-#                             rtol=1e-2, atol=1e-4) # Play with these tolerances to balance speed and accuracy
-#             if sol.success:
-#                 model_pain = np.maximum(sol.y[0], 0.0) # No negative pain
-#                 mse = np.mean((pain_data - model_pain) ** 2)
-#                 return mse
-#             else:
-#                 return 1e6
-#         except Exception as e:
-#             return 1e6
-    
-#     # Parameter bounds
-#     if optimize_theta:
-#         bounds = [
-#             (0.5, 10.0), # alpha
-#             (10.0, 80.0), # beta
-#             (0.0005, 0.1), # gamma
-#             (-0.05, 0.05), # lambda_param
-#             (35.0, 50.0) # theta
-#         ]
-#         x0_default = [initial_params['alpha'], initial_params['beta'],
-#                       initial_params['gamma'], initial_params['lambda_param'],
-#                       initial_params['theta']]
-#     else:
-#         bounds = [
-#             (0.5, 10.0), # alpha
-#             (10.0, 80.0), # beta
-#             (0.0005, 0.1), # gamma
-#             (-0.05, 0.05) # lambda_param
-#         ]
-#         x0_default = [initial_params['alpha'], initial_params['beta'],
-#                       initial_params['gamma'], initial_params['lambda_param']]
-    
-#     # Generate starting points
-#     np.random.seed()
-#     if use_multiple_starts:
-#         starting_points = [x0_default] # Always include default
-#         for _ in range(n_starts - 1):
-#             random_start = [np.random.uniform(b[0],b[1]) for b in bounds]
-#             starting_points.append(random_start)
-#     else:
-#         starting_points = [x0_default]
-    
-#     # Try each starting point
-#     best_result = None
-#     best_cost = np.inf
-#     best_start_idx = -1
-#     for idx, x0 in enumerate(starting_points):
-#         if verbose:
-#             print(f"    Starting point {idx+1}/{len(starting_points)}...", end='', flush=True)
-#         # Test initial cost
-#         try:
-#             initial_cost = objective(x0)
-#             result = minimize(objective, x0, method='L-BFGS-B',
-#                             bounds=bounds, options={'maxiter':1000, 
-#                                                     'maxfun': 15000, 
-#                                                     'ftol':1e-12,
-#                                                     'gtol': 1e-10,
-#                                                     'eps': 1e-8,
-#                                                     'disp': True})
-            
-#             if verbose:
-#                 status = "✓" if result.success else "✗"
-#                 print(f"{status} cost: {initial_cost:.1f} → {result.fun:.1f} "
-#                     f"({result.nfev} evals, {result.nit} iters)")
-            
-#             if result.fun < best_cost:
-#                 best_cost = result.fun
-#                 best_result = result
-#                 best_start_idx = idx
-#         except Exception as e:
-#             if verbose:
-#                 print(f"❌ Error during optimization: {e}", end='', flush=True)
-#             continue
-    
-#     # Package results
-#     if best_result is not None and best_result.fun < 1e5:
-#         if optimize_theta:
-#             alpha, beta, gamma, lambda_param, theta = best_result.x
-#         else:
-#             alpha, beta, gamma, lambda_param = best_result.x
-#             theta = initial_params['theta']
-        
-#         best_params = {
-#             'alpha': alpha,
-#             'beta': beta,
-#             'gamma': gamma,
-#             'lambda_param': lambda_param,
-#             'theta': theta,
-#             'mse': best_result.fun,
-#             'success': True,
-#             'n_trials': len(concatenated_data),
-#             'n_points': len(time_data),
-#             'n_evals': best_result.nfev,
-#             'n_iters': best_result.nit,
-#             'best_start_index': best_start_idx
-#         }
-
-#         # Re-run model once to get predictions for storage
-#         model_params = {
-#             'alpha': alpha,
-#             'beta': beta,
-#             'gamma': gamma, 
-#             'lambda_param': lambda_param,
-#             'theta': theta
-#         }
-#         t_span = (time_data[0], time_data[-1])
-#         y0 = [0.0, 0.0] # Initial [pain, pain rate]
-
-#         try:
-#             sol = solve_ivp(cecchi2012_full, t_span, y0,
-#                             args=(model_params, temp_func, temp_deriv_func),
-#                             t_eval=time_data, method='LSODA',
-#                             rtol=1e-6, atol=1e-9)
-#             if sol.success:
-#                 model_pain = np.maximum(sol.y[0], 0.0) # No negative pain
-#                 best_params['model_data'] = {
-#                     'time': time_data,
-#                     'predicted_pain': model_pain,
-#                     'observed_pain': pain_data,
-#                     'temperature': temp_data
-#                 }
-#             if verbose:
-#                 print(f"\n   ✅ Optimization successful (start #{best_start_idx+1}):")
-#                 print(f"      α={alpha:.4f}, β={beta:.4f}, γ={gamma:.4f}, λ={lambda_param:.4f}, θ={theta:.2f}")
-#                 print(f"      MSE={best_result.fun:.2f} ({best_result.nfev} evals, {best_result.nit} iters)")
-
-#         except Exception as e:
-#             if verbose:
-#                 print(f"❌ Error during final solve: {e}", end='', flush=True)
-#     return best_params, best_result
-
-
 def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None,
                                use_multiple_starts=False, n_starts=5, verbose=True,
-                               optimizer='de', random_state=0):
+                               optimizer='de', random_state=0, bounds=None):
     """
     Parameter optimization for the Simplified Cecchi 2012 model.
     Simplified model: p'(t) = ᾱF(T,θ) - γ̄p(t)
@@ -863,16 +603,28 @@ def optimize_cecchi_simplified(subject_data, threshold=None, initial_params=None
     THETA_BOUNDS = (30.0, 52.0)
 
     if optimize_theta:
-        bounds = [ALPHA_BOUNDS, GAMMA_BOUNDS, THETA_BOUNDS]
+        default_bounds = [ALPHA_BOUNDS, GAMMA_BOUNDS, THETA_BOUNDS]
         param_names = ['alpha_bar', 'gamma_bar', 'theta']
         x0_default = [initial_params['alpha_bar'],
                       initial_params['gamma_bar'],
                       initial_params['theta']]
     else:
-        bounds = [ALPHA_BOUNDS, GAMMA_BOUNDS]
+        default_bounds = [ALPHA_BOUNDS, GAMMA_BOUNDS]
         param_names = ['alpha_bar', 'gamma_bar']
         x0_default = [initial_params['alpha_bar'],
                       initial_params['gamma_bar']]
+
+    # A caller can widen the limits -- e.g. to refit a subject whose parameters
+    # landed on a bound, to tell "the bound was too tight" apart from "the fit
+    # failed". The length is checked because a caller passing three bounds to a
+    # two-parameter fit would otherwise map theta's range onto nothing and fail
+    # silently rather than loudly.
+    bounds = default_bounds if bounds is None else [tuple(b) for b in bounds]
+    if len(bounds) != len(param_names):
+        raise ValueError(
+            f'bounds has {len(bounds)} entries but this fit has '
+            f'{len(param_names)} parameters {param_names}; theta is '
+            f'{"fitted" if optimize_theta else "fixed, so pass only 2"}')
     
     best_result = None
     best_cost = np.inf
@@ -1313,7 +1065,6 @@ def plot_optimization_fit(subject, optimization_results, save_path=None, figsize
     fig : matplotlib.figure.Figure
         The figure object
     """
-    from sklearn.metrics import r2_score
     if subject not in optimization_results:
         print(f"No optimization results found for subject {subject}.")
         return None
@@ -1405,7 +1156,6 @@ def print_optimization_summary(optimization_results):
     optimization_results : dict
         Dictionary of optimization results
     """
-    from sklearn.metrics import r2_score
     
     print(f"\n{'='*80}")
     print(f"SIMPLIFIED MODEL OPTIMIZATION RESULTS SUMMARY")
@@ -1475,16 +1225,15 @@ def print_optimization_summary(optimization_results):
 
 
 ################# Side functions to check data quality #################
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-
 def analyze_subject_data(subject_id, data_df, detailed=True):
     """
     Comprehensive analysis of a subject's data to identify potential issues
     """
-    subject_data = data_df[data_df['subject'] == subject_id].copy()
-    
+    # subject_uid is the unique key; 'subject' is an offset-numeric id that
+    # does not identify a person on its own. Fall back for older tables.
+    key = 'subject_uid' if 'subject_uid' in data_df.columns else 'subject'
+    subject_data = data_df[data_df[key] == subject_id].copy()
+
     if subject_data.empty:
         print(f"No data found for subject {subject_id}")
         return
