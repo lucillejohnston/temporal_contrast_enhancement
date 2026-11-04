@@ -61,6 +61,16 @@ FIG_PATH = ('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python
             'temporal_contrast_enhancement/TCE_analysis/behavior_modeling/figures/')
 TRACES_FILE = DATA_PATH + 'combined_traces_1Hz.pkl'
 
+# 'sEEG' fits the three sEEG patients instead, warm-started from the sEEG run
+# of fit_full_model.py. Inputs, outputs and figures all live in an sEEG/
+# subfolder: the globs below would otherwise mix the two cohorts' fit tables,
+# and the date-only figure names would overwrite same-day cohort figures.
+COHORT = 'alter_collab'   # 'alter_collab' or 'sEEG'
+if COHORT == 'sEEG':
+    TRACES_FILE = DATA_PATH + 'sEEG_traces_1Hz.pkl'
+    RESULTS_PATH = RESULTS_PATH + 'sEEG/'
+    FIG_PATH = FIG_PATH + 'sEEG/'
+
 FIT_THETA_PER_TRIAL = False   # see module docstring
 N_PERTURBED_STARTS = 3        # extra local starts around the warm start
 ALPHA_BOUNDS = (0.001, 50.0)

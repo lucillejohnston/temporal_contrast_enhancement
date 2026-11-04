@@ -45,6 +45,15 @@ RESULTS_PATH = ('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Py
                 'model_fit_results/')
 TRACES_FILE = DATA_PATH + 'combined_traces_1Hz.pkl'
 
+# 'sEEG' fits the three sEEG patients instead (built by build_sEEG_traces.py,
+# seeded from fit_sEEG_patients.py). Their inputs and outputs live in an sEEG/
+# subfolder so the two cohorts never pick up each other's files by glob or
+# overwrite each other's same-day outputs.
+COHORT = 'alter_collab'   # 'alter_collab' or 'sEEG'
+if COHORT == 'sEEG':
+    TRACES_FILE = DATA_PATH + 'sEEG_traces_1Hz.pkl'
+    RESULTS_PATH = RESULTS_PATH + 'sEEG/'
+
 # kneeOA was stimulated at forearm and knee, so the unit of fitting is
 # (subject, site) rather than subject -- the same convention as
 # Psychophysical_Modeling.py, which is where the seeds come from. Without it a
