@@ -36,6 +36,8 @@ petre_params = {
     'lambda_param': 0.0169,
     'theta': 37.1913,
 }
+
+
 #%%
 
 # First, determine pain threshold (theta) for each subject

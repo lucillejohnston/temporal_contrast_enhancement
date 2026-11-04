@@ -22,7 +22,7 @@ import pandas as pd
 HERE = Path(__file__).resolve().parent
 TRACES = HERE.parents[1] / "data" / "alter_collab_data" / "combined_traces_1Hz.pkl"
 FULL_FITS = HERE / "model_fit_results" / "20260924_model_fits_subject_full.csv"
-SIMPLE_FITS = HERE / "model_fit_results" / "model_fits_subject_20261005.csv"
+SIMPLE_FITS = HERE / "model_fit_results" / "model_fits_subject_20261007.csv"
 HTML = HERE / "cecchi_model_explorer.html"
 
 TRIAL_TYPES = ["offset", "onset", "t1_hold", "t2_hold"]

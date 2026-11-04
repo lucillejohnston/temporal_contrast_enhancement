@@ -18,10 +18,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
 import statsmodels.formula.api as smf
+from statsmodels.stats.multitest import multipletests
 from datetime import datetime
+from itertools import combinations
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from psychophysics_modeling_functions import plot_subject_trials
+from psychophysics_modeling_functions import (plot_subject_trials,
+                                              prepare_trials_for_optimization,
+                                              simulate_trials_analytic)
 
 DATA_PATH = ('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/'
              'temporal_contrast_enhancement/TCE_analysis/behavior_modeling/model_fit_results/')
@@ -31,14 +35,46 @@ TRACES_FILE = ('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Pyt
                'temporal_contrast_enhancement/data/alter_collab_data/'
                'combined_traces_1Hz.pkl')
 
-# Trial types present in all three datasets. plosONE also carries
-# offset_AV_conditioning / offset_AV_test (a conditioning paradigm),
-# kneeOA has innocuous, and plosONE has calibration / inv / stepdown
+# Just in case there's any confusion but I think I already fixed the naming inconsistencies
 COMMON_TRIAL_TYPES = ['offset', 'onset', 't1_hold', 't2_hold']
+
+# Each stepped trial sits next to the hold it should be compared against, so
+# the adjacent pairs in the figure are the contrasts that matter. Note this is
+# the PLOT order only -- COMMON_TRIAL_TYPES still sets the model's reference
+# level (offset), so changing this does not change any statistic.
+PLOT_ORDER = ['t1_hold', 'offset', 't2_hold', 'onset']
+
+# offset probes offset analgesia, onset probes onset hyperalgesia -- the two
+# conditions of interest, so they get the only colours. The holds are their
+# controls and are greyed out so the eye goes to OA and OH; light vs medium
+# distinguishes the two temperature levels without adding a third hue.
+TRIAL_COLORS = {'offset': '#026A07',   # OA
+                'onset': '#DA1C1C',    # OH
+                't1_hold': '#CFCFCF',
+                't2_hold': '#8A8A8A'}
+TRIAL_LABELS = {'offset': 'Offset\n(OA)', 'onset': 'Onset\n(OH)',
+                't1_hold': 'Hold\n(T1)', 't2_hold': 'Hold\n(T2)'}
+
+# Pain group: light -> dark with increasing pain. The database spells it both
+# 'Control' and 'control' depending on the study, so labels are capitalised
+# before anything groups or plots them -- otherwise those are two categories.
+GROUP_ORDER = ['Control', 'Low', 'High']
+GROUP_COLORS = {'Control': '#DBBBAF', 'Low': '#91472A', 'High': '#491400'}
+
+# Dataset is a nuisance factor here, not the point, so these are deliberately
+# muted and carry no ordering.
+DATASET_ORDER = ['plosONE', 'kneeOA', 'cLBP']
+DATASET_COLORS = {'plosONE': '#8FA8B8', 'kneeOA': '#A7B29A', 'cLBP': '#AFA3B5'}
+
+# One value per subject per trial type, not one per trial. A subject
+# contributes ~3 trials of each type, so a trial-level distribution lets the
+# heavily-sampled subjects shape the violin. It also matches the mixed model
+# below, which gives each subject one intercept. Set False for trial-level.
+PLOT_PER_SUBJECT = True
 
 # Fits where a parameter landed on a bound were chosen by the bound rather
 # than by the data. Every result below is reported with and without them.
-DROP_AT_BOUNDS = True
+DROP_AT_BOUNDS = False
 
 # kneeOA has forearm and knee and is fitted per site.
 # and the model comparison use forearm only, so kneeOA stays comparable to the
@@ -85,16 +121,41 @@ print(f'site filter ({SITE}): {n_before} -> {len(subjects)} subject fits')
 
 trials['r_z'] = fisher_z(trials['r'])
 
-# trials where the rating or prediction is flat cannot be scored with r because there is no variance
-# flag them 
+# RMSE, in VAS, is the headline measure everywhere below. r is kept for one
+# thing only: the replication line against Cecchi 2012's 0.88. The reason is
+# that r is blind to level -- a prediction with the right shape at the wrong
+# height scores near 1 -- and every question here is about level. RMSE is the
+# square root of the mse the fits were actually optimised on, so it reports
+# the quantity the optimizer minimised, in the units of the rating scale.
+trials['rmse'] = np.sqrt(trials['mse'])
+
+# Trials with a flat rating have no r, but they do have an RMSE, so they are
+# kept now and only excluded from the r column. Previously they were dropped
+# outright, which quietly removed the flattest hold trials from everything.
 unscorable = trials['r_z'].isna()
 if unscorable.any():
     unscorable_pain_trials = unscorable & (trials['trial_type'] != 'innocuous')
-    print(f'\n{unscorable.sum()} trials unscorable with r '
-          f'({unscorable_pain_trials.sum()} of them supra-threshold):')
+    print(f'\n{unscorable.sum()} trials have no r (flat rating or prediction); '
+          f'{unscorable_pain_trials.sum()} of them supra-threshold. '
+          f'They are KEPT -- RMSE is still defined:')
     print(trials[unscorable].groupby(['dataset', 'trial_type'])
           .size().to_string())
-trials = trials[~unscorable]
+
+# RMSE scales with how wide a range a subject uses on the VAS (Spearman rho
+# = 0.78 against each subject's own 5-95 percentile range). That is harmless
+# for a within-subject comparison such as trial type, where each person is
+# their own control, but it would dominate any comparison BETWEEN subjects --
+# a pain-group difference in raw RMSE would largely be a difference in rating
+# style. nrmse divides it out and is what the group and dataset plots use.
+_traces_for_range = pd.read_pickle(TRACES_FILE)
+vas_range = (_traces_for_range.groupby('subject_uid')['pain']
+             .agg(lambda x: x.quantile(.95) - x.quantile(.05))
+             .rename('vas_range'))
+trials = trials.merge(vas_range, on='subject_uid', how='left')
+trials['nrmse'] = trials['rmse'] / trials['vas_range'].replace(0, np.nan)
+print(f"\nsubject VAS range (p95-p05): median "
+      f"{vas_range.median():.1f}, IQR {vas_range.quantile(.25):.1f}"
+      f"-{vas_range.quantile(.75):.1f}")
 
 flagged = set(subjects.loc[subjects['at_bounds'] != '', 'subject_uid'])
 print(f'\n{len(trials):,} trials from {trials["subject_uid"].nunique()} subjects')
@@ -112,84 +173,84 @@ print(f'                   {trials_main["r"].median():.3f}  '
       f'(excluding {len(flagged)} bound-flagged)')
 print(f'                   Cecchi 2012: 0.92 simple / 0.88 complex stimuli')
 
-# %%
-# ==================================================================
-# Explore the flagged subjects with parameters at the bounds
-# ==================================================================
-print('\n' + '=' * 70)
-print('SUBJECTS WITH PARAMETER ON A BOUND')
-print('=' * 70)
+# # %%
+# # ==================================================================
+# # Explore the flagged subjects with parameters at the bounds
+# # ==================================================================
+# print('\n' + '=' * 70)
+# print('SUBJECTS WITH PARAMETER ON A BOUND')
+# print('=' * 70)
 
-# bounds match optimize_cecchi_simplified in psychophysics_modeling_functions
-BOUNDS = {'alpha_bar':(0.001, 50.0),
-          'gamma_bar':(0.001,3.0),
-          'theta':(30.0, 52.0)}
+# # bounds match optimize_cecchi_simplified in psychophysics_modeling_functions
+# BOUNDS = {'alpha_bar':(0.001, 50.0),
+#           'gamma_bar':(0.001,3.0),
+#           'theta':(30.0, 52.0)}
 
-at_bound = subjects[subjects['at_bounds']!= ''].copy()
-print(f'{len(at_bound)}/{len(subjects)} subjects ({len(at_bound)/len(subjects):.0%})\n')
+# at_bound = subjects[subjects['at_bounds']!= ''].copy()
+# print(f'{len(at_bound)}/{len(subjects)} subjects ({len(at_bound)/len(subjects):.0%})\n')
 
-# Which end of which bound, since low and high mean different things
-hits = []
-for _, row in at_bound.iterrows():
-    for param in str(row['at_bounds']).split(','):
-        param = param.strip()
-        if param in BOUNDS:
-            lo, hi = BOUNDS[param]
-            end = 'lower' if abs(row[param] - lo) < abs(row[param] - hi) else 'upper'
-            hits.append({'subject_uid': row['subject_uid'],
-                         'dataset': row['dataset'], 'param': param,
-                         'end': end, 'value': row[param], 'r': row['r'],
-                         'n_trials': row['n_trials']})
-hits = pd.DataFrame(hits)
-print('which bound, and which end:')
-print(hits.groupby(['param', 'end']).agg(
-    n=('r', 'size'), median_r=('r', 'median')).round(3).to_string())
-print('\nby dataset:')
-print(hits.groupby(['dataset', 'param', 'end']).size().to_string())
+# # Which end of which bound, since low and high mean different things
+# hits = []
+# for _, row in at_bound.iterrows():
+#     for param in str(row['at_bounds']).split(','):
+#         param = param.strip()
+#         if param in BOUNDS:
+#             lo, hi = BOUNDS[param]
+#             end = 'lower' if abs(row[param] - lo) < abs(row[param] - hi) else 'upper'
+#             hits.append({'subject_uid': row['subject_uid'],
+#                          'dataset': row['dataset'], 'param': param,
+#                          'end': end, 'value': row[param], 'r': row['r'],
+#                          'n_trials': row['n_trials']})
+# hits = pd.DataFrame(hits)
+# print('which bound, and which end:')
+# print(hits.groupby(['param', 'end']).agg(
+#     n=('r', 'size'), median_r=('r', 'median')).round(3).to_string())
+# print('\nby dataset:')
+# print(hits.groupby(['dataset', 'param', 'end']).size().to_string())
 
-# Are these bad fits, or just extreme subjects? If their fit quality matches
-# everyone else's, the bound is a constraint on the parameter rather than a
-# symptom of failure, and excluding them is throwing away usable data.
-clean = subjects[subjects['at_bounds'] == '']
-print(f'\nfit quality, flagged vs not:')
-print(f'  on a bound : median r {at_bound["r"].median():.3f}  '
-      f'(n={len(at_bound)}, median {at_bound["n_trials"].median():.0f} trials)')
-print(f'  clean      : median r {clean["r"].median():.3f}  '
-      f'(n={len(clean)}, median {clean["n_trials"].median():.0f} trials)')
-u, p = stats.mannwhitneyu(at_bound['r'].dropna(), clean['r'].dropna())
-print(f'  Mann-Whitney p = {p:.3g}')
+# # Are these bad fits, or just extreme subjects? If their fit quality matches
+# # everyone else's, the bound is a constraint on the parameter rather than a
+# # symptom of failure, and excluding them is throwing away usable data.
+# clean = subjects[subjects['at_bounds'] == '']
+# print(f'\nfit quality, flagged vs not:')
+# print(f'  on a bound : median r {at_bound["r"].median():.3f}  '
+#       f'(n={len(at_bound)}, median {at_bound["n_trials"].median():.0f} trials)')
+# print(f'  clean      : median r {clean["r"].median():.3f}  '
+#       f'(n={len(clean)}, median {clean["n_trials"].median():.0f} trials)')
+# u, p = stats.mannwhitneyu(at_bound['r'].dropna(), clean['r'].dropna())
+# print(f'  Mann-Whitney p = {p:.3g}')
 
-print('\nFlagged subjects:')
-print(at_bound[['subject_uid', 'dataset', 'group_label', 'at_bounds',
-            'alpha_bar', 'gamma_bar', 'theta', 'r', 'n_trials']]
-      .sort_values('r').round(3).to_string(index=False))
+# print('\nFlagged subjects:')
+# print(at_bound[['subject_uid', 'dataset', 'group_label', 'at_bounds',
+#             'alpha_bar', 'gamma_bar', 'theta', 'r', 'n_trials']]
+#       .sort_values('r').round(3).to_string(index=False))
 
-# Refit the bound-flagged subjects with much wider limits 
-import sys, os
-sys.path.append(os.path.dirname(os.path.abspath('.')))
-from psychophysics_modeling_functions import optimize_cecchi_simplified
+# # Refit the bound-flagged subjects with much wider limits 
+# import sys, os
+# sys.path.append(os.path.dirname(os.path.abspath('.')))
+# from psychophysics_modeling_functions import optimize_cecchi_simplified
 
-WIDE = [(1e-4, 5000.0), (1e-5, 50.0), (25.0, 55.0)]
-data_df = pd.read_pickle(TRACES_FILE)
+# WIDE = [(1e-4, 5000.0), (1e-5, 50.0), (25.0, 55.0)]
+# data_df = pd.read_pickle(TRACES_FILE)
 
-rows = []
-for uid in sorted(flagged):
-    sd = data_df[data_df['subject_uid'] == uid]
-    old = subjects.set_index('subject_uid').loc[uid]
-    new, _ = optimize_cecchi_simplified(sd, threshold=None, optimizer='de',
-                                        bounds=WIDE, verbose=False)
-    if new is None:
-        continue
-    rows.append({'subject_uid': uid, 'r_old': old['r'], 'r_new': new['r'],
-                 'alpha_old': old['alpha_bar'], 'alpha_new': new['alpha_bar'],
-                 'gamma_old': old['gamma_bar'], 'gamma_new': new['gamma_bar'],
-                 'theta_old': old['theta'], 'theta_new': new['theta'],
-                 'still_at_bound': ','.join(new['at_bounds'])})
-w = pd.DataFrame(rows)
-w['gain'] = w['r_new'] - w['r_old']
-print(w.round(3).to_string(index=False))
-print(f'\nimproved by >0.02: {(w.gain > 0.02).sum()}/{len(w)}')
-print(f'still on a bound : {(w.still_at_bound != "").sum()}/{len(w)}')
+# rows = []
+# for uid in sorted(flagged):
+#     sd = data_df[data_df['subject_uid'] == uid]
+#     old = subjects.set_index('subject_uid').loc[uid]
+#     new, _ = optimize_cecchi_simplified(sd, threshold=None, optimizer='de',
+#                                         bounds=WIDE, verbose=False)
+#     if new is None:
+#         continue
+#     rows.append({'subject_uid': uid, 'r_old': old['r'], 'r_new': new['r'],
+#                  'alpha_old': old['alpha_bar'], 'alpha_new': new['alpha_bar'],
+#                  'gamma_old': old['gamma_bar'], 'gamma_new': new['gamma_bar'],
+#                  'theta_old': old['theta'], 'theta_new': new['theta'],
+#                  'still_at_bound': ','.join(new['at_bounds'])})
+# w = pd.DataFrame(rows)
+# w['gain'] = w['r_new'] - w['r_old']
+# print(w.round(3).to_string(index=False))
+# print(f'\nimproved by >0.02: {(w.gain > 0.02).sum()}/{len(w)}')
+# print(f'still on a bound : {(w.still_at_bound != "").sum()}/{len(w)}')
 #%%
 # ==================================================================
 # Is the model worse on particular trial types?
@@ -199,242 +260,442 @@ print('FIT QUALITY BY TRIAL TYPE')
 print('=' * 70)
 
 by_type = (trials_main.groupby(['dataset', 'trial_type'])
-           .agg(n_trials=('r', 'size'), n_subjects=('subject_uid', 'nunique'),
-                median_r=('r', 'median'), mean_z=('r_z', 'mean'))
-           .assign(mean_r=lambda d: inverse_fisher_z(d['mean_z']))
-           .drop(columns='mean_z').round(3))
+           .agg(n_trials=('rmse', 'size'), n_subjects=('subject_uid', 'nunique'),
+                median_rmse=('rmse', 'median'), median_r=('r', 'median'))
+           .round(3))
 print(by_type.to_string())
 
 common = trials_main[trials_main['trial_type'].isin(COMMON_TRIAL_TYPES)].copy()
 print(f'\nAcross the {len(COMMON_TRIAL_TYPES)} shared trial types '
       f'({len(common):,} trials):')
 print(common.groupby('trial_type')
-      .agg(n=('r', 'size'), median_r=('r', 'median'),
-           mean_r=('r_z', lambda z: inverse_fisher_z(z.mean())))
+      .agg(n=('rmse', 'size'), median_rmse=('rmse', 'median'),
+           median_r=('r', 'median'))
       .round(3).to_string())
+
+# THE one place r is still the headline: Cecchi 2012 report r, so this is the
+# number that says whether the replication worked. Everything after it is a
+# question about level, which r cannot answer, and uses RMSE instead.
+print(f'\nREPLICATION: median per-trial r = {trials["r"].median():.3f}   '
+      f'(Cecchi 2012: 0.92 simple / 0.88 complex)')
 
 # Mixed model: trial type is within-subject, so a random intercept per subject
 # keeps a few well-fitted subjects from driving the effect. 'offset' is the
 # reference level, so each coefficient reads as "relative to offset trials".
+# Fitted on RMSE rather than Fisher z: RMSE is unbounded so it needs no
+# variance-stabilising transform, and its units (VAS) are readable, so a
+# coefficient of +1.5 means "1.5 VAS worse than offset trials".
 common['trial_type'] = pd.Categorical(common['trial_type'],
                                       categories=COMMON_TRIAL_TYPES)
-m1 = smf.mixedlm('r_z ~ C(trial_type) + C(dataset)', common,
+m1 = smf.mixedlm('rmse ~ C(trial_type) + C(dataset)', common,
                  groups=common['subject_uid']).fit()
-print('\nMixed model  r_z ~ trial_type + dataset,  random intercept per subject')
-print('(coefficients are relative to offset trials, in Fisher z units)')
+print('\nMixed model  rmse ~ trial_type + dataset,  random intercept per subject')
+print('(coefficients are relative to offset trials, in VAS)')
 print(m1.summary().tables[1])
 
 # The hypothesis was specifically that onset trials fit worse. Test it
 # within-subject, on subjects who have both kinds of trial.
-# .astype(str) matters: trial_type is Categorical with four levels, and a
-# groupby on it keeps all four, so the unstacked frame would carry all-NaN
-# t1_hold/t2_hold columns and dropna() would discard every subject.
 pair_src = common[common['trial_type'].isin(['offset', 'onset'])].copy()
 pair_src['trial_type'] = pair_src['trial_type'].astype(str)
-paired = (pair_src.groupby(['subject_uid', 'trial_type'])['r_z']
+paired = (pair_src.groupby(['subject_uid', 'trial_type'])['rmse']
           .mean().unstack()[['offset', 'onset']].dropna())
 t_stat, p_val = stats.ttest_rel(paired['onset'], paired['offset'])
 w_stat, p_w = stats.wilcoxon(paired['onset'], paired['offset'])
 print(f'\nPaired test, onset vs offset ({len(paired)} subjects with both):')
-print(f'   mean r: onset {inverse_fisher_z(paired["onset"].mean()):.3f}  '
-      f'offset {inverse_fisher_z(paired["offset"].mean()):.3f}')
+print(f'   mean RMSE: onset {paired["onset"].mean():.2f} VAS  '
+      f'offset {paired["offset"].mean():.2f} VAS  '
+      f'(offset is {paired["offset"].mean() - paired["onset"].mean():+.2f} worse)')
 print(f'   paired t = {t_stat:.2f}, p = {p_val:.2e}')
 print(f'   Wilcoxon  = {w_stat:.0f}, p = {p_w:.2e}')
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-order = (common.groupby('trial_type')['r'].median().sort_values().index.tolist())
-sns.boxplot(data=common, x='trial_type', y='r', order=order, ax=axes[0],
-            color='lightsteelblue', fliersize=2)
-axes[0].axhline(0.88, color='crimson', ls='--', lw=1,
-                label='Cecchi 2012 (complex)')
-axes[0].set(xlabel='', ylabel='per-trial r', title='Fit quality by trial type')
-axes[0].legend(fontsize=8)
-sns.boxplot(data=common, x='trial_type', y='r', hue='dataset', order=order,
-            ax=axes[1], fliersize=2)
-axes[1].axhline(0.88, color='crimson', ls='--', lw=1)
-axes[1].set(xlabel='', ylabel='per-trial r', title='...split by dataset')
-axes[1].legend(fontsize=8, title='')
+# ------------------------------------------------------------------
+# FIGURE: fit quality by trial type
+# ------------------------------------------------------------------
+# Raw RMSE, not normalised: trial type is a WITHIN-subject contrast, so each
+# person is their own control and their rating range cancels out.
+if PLOT_PER_SUBJECT:
+    plot_src = (common.groupby(['subject_uid', 'trial_type'], observed=True)['rmse']
+                .mean().reset_index())
+    unit = 'subjects'
+else:
+    plot_src = common.copy()
+    unit = 'trials'
+
+counts = plot_src['trial_type'].value_counts()
+
+fig, ax = plt.subplots(figsize=(8.6, 5.8))
+# cut=0 stops the KDE tails running past the observed range.
+sns.violinplot(data=plot_src, x='trial_type', y='rmse', order=PLOT_ORDER,
+               hue='trial_type', palette=TRIAL_COLORS, legend=False,
+               cut=0, inner='box', linewidth=1.0, saturation=1.0, ax=ax)
+for coll in ax.collections:
+    coll.set_alpha(.88)
+
+ax.set_xticks(range(len(PLOT_ORDER)))
+ax.set_xticklabels([TRIAL_LABELS[tt] for tt in PLOT_ORDER])
+ax.set(xlabel='', ylabel=f'model error (RMSE, VAS) per {unit[:-1]}',
+       title='Fit per trial type')
+ax.spines[['top', 'right']].set_visible(False)
+ax.invert_yaxis()   # lower RMSE is a better fit, so better reads as higher
+
+# Median sits above its own violin.
+low = plot_src['rmse'].min()
+span = plot_src['rmse'].max() - low
+for i, tt in enumerate(PLOT_ORDER):
+    vals = plot_src.loc[plot_src['trial_type'] == tt, 'rmse']
+    ax.text(i, vals.min() - .012 * span, f'{vals.median():.1f}', va='bottom',
+            ha='center', fontsize=9.5, color='0.15')
+
+# No significance brackets. With 251 subjects every pairwise contrast came out
+# at p < .001 after correction, so the stars separated nothing. The mixed
+# model printed above reports the effect sizes in VAS, which is where the
+# contrast between these trial types actually lives.
+ax.set_ylim(plot_src['rmse'].max() + .04 * span, low - .07 * span)
+
 plt.tight_layout()
-plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_fit_by_trial_type.png', dpi=150, bbox_inches='tight')
+plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_fit_by_trial_type.png',
+            dpi=200, bbox_inches='tight')
 plt.show()
 
 
 #%%
 # ==================================================================
-# Q2. Is the model worse in pain groups than controls?
+# Example fits: one OA trial and one OH trial, for the same slide
+# ==================================================================
+# Picked at the MEDIAN r for their trial type, so the example is typical of
+# the violin next to it rather than a flattering case. Run the contact sheet
+# first, pick the rank you like out of it, set EXAMPLE_PICK, re-run.
+EXAMPLE_TYPES = ['offset', 'onset']
+N_CANDIDATES = 6                           # panels per row in the contact sheet
+EXAMPLE_PICK = {'offset': 2, 'onset': 4}   # 0 = closest to the median r
+
+traces = pd.read_pickle(TRACES_FILE)
+traces['site'] = traces['site'].fillna(SITE)
+traces = traces[traces['site'] == SITE]
+fitted_params = subjects.set_index('subject_uid')[['alpha_bar', 'gamma_bar',
+                                                   'theta']]
+
+
+def median_candidates(trial_type, n):
+    """Trials of this type, ordered by how close their RMSE is to the median."""
+    pool = trials_main[trials_main['trial_type'] == trial_type]
+    med = pool['rmse'].median()
+    return (pool.assign(_dist=(pool['rmse'] - med).abs())
+            .sort_values('_dist').head(n).reset_index(drop=True))
+
+
+def plot_example_fit(row, ax, show_temp=True):
+    """Observed pain in black, model in the trial type's colour."""
+    uid, tnum = row['subject_uid'], int(row['trial_num'])
+    subject_rows = traces[traces['subject_uid'] == uid]
+    trial_list = prepare_trials_for_optimization(subject_rows)
+    idx = next((i for i, tr in enumerate(trial_list)
+                if tr['trial_num'] == tnum), None)
+    if idx is None:
+        ax.set_axis_off()
+        return
+    params = fitted_params.loc[uid].to_dict()
+    pred = simulate_trials_analytic(params, trial_list)[idx]
+    tr = trial_list[idx]
+
+    if show_temp:
+        axT = ax.twinx()
+        axT.plot(tr['time'], tr['temperature'], color='0.75', lw=1.0, zorder=0)
+        axT.set_ylabel('°C', fontsize=7, color='0.6')
+        axT.tick_params(labelsize=6, colors='0.6')
+        axT.spines[['top']].set_visible(False)
+
+    ax.plot(tr['time'], tr['pain'], color='black', lw=1.6, label='rating',
+            zorder=3)
+    ax.plot(tr['time'], pred, color=TRIAL_COLORS[row['trial_type']], lw=1.8,
+            label='model', zorder=4)
+
+    # The stored RMSE came from the subject-level fit; recomputing it here is
+    # a check that this panel really is the trial the table is describing.
+    check = float(np.sqrt(np.mean((tr['pain'] - pred) ** 2)))
+    warn = '' if abs(check - row['rmse']) < 0.5 else '  !!'
+    bias = float(np.mean(tr['pain'] - pred))
+    ax.set_title(f"{uid}  trial {tnum}\nRMSE = {row['rmse']:.1f} VAS   "
+                 f"bias = {bias:+.1f}{warn}", fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.spines[['top', 'right']].set_visible(False)
+
+
+# ---- contact sheet: flip through these ----
+fig, axes = plt.subplots(len(EXAMPLE_TYPES), N_CANDIDATES,
+                         figsize=(3.0 * N_CANDIDATES, 2.6 * len(EXAMPLE_TYPES)),
+                         squeeze=False)
+for r_i, tt in enumerate(EXAMPLE_TYPES):
+    cands = median_candidates(tt, N_CANDIDATES)
+    print(f'\n{TRIAL_LABELS[tt].replace(chr(10), " ")}  median RMSE = '
+          f'{trials_main.loc[trials_main["trial_type"] == tt, "rmse"].median():.2f} VAS')
+    print(cands[['subject_uid', 'trial_num', 'dataset', 'rmse', 'r']]
+          .round(3).to_string(index=True))
+    for c_i in range(N_CANDIDATES):
+        ax = axes[r_i][c_i]
+        if c_i < len(cands):
+            plot_example_fit(cands.loc[c_i], ax, show_temp=False)
+            ax.text(.02, .97, f'rank {c_i}', transform=ax.transAxes,
+                    fontsize=7, va='top', color='0.45')
+        else:
+            ax.set_axis_off()
+    axes[r_i][0].set_ylabel(f'{TRIAL_LABELS[tt]}\npain (VAS)', fontsize=8)
+plt.tight_layout()
+plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_example_fit_candidates.png',
+            dpi=150, bbox_inches='tight')
+plt.show()
+
+
+# ---- the picked pair, slide-sized ----
+# Stacked and sharing x: the two trials run on the same clock, so the stimulus
+# phases line up vertically. y is NOT shared -- these are different people, and
+# forcing a common VAS range flattens whichever of them rated lower.
+fig, axes = plt.subplots(len(EXAMPLE_TYPES), 1, figsize=(5, 6.6),
+                         sharex=True)
+axes = np.atleast_1d(axes)
+for ax, tt in zip(axes, EXAMPLE_TYPES):
+    cands = median_candidates(tt, max(N_CANDIDATES, EXAMPLE_PICK[tt] + 1))
+    plot_example_fit(cands.loc[EXAMPLE_PICK[tt]], ax)
+    ax.set_ylabel(f'{TRIAL_LABELS[tt].replace(chr(10), " ")}\npain (VAS)',
+                  fontsize=9)
+axes[-1].set_xlabel('time (s)', fontsize=9)
+axes[0].legend(fontsize=8, frameon=False, loc='upper left')
+plt.tight_layout()
+plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_example_fit_OA_OH.png',
+            dpi=200, bbox_inches='tight')
+plt.show()
+
+
+
+#%%
+# ==================================================================
+# Is the model worse in pain groups than controls?
 # ==================================================================
 print('\n' + '=' * 70)
-print('Q2. FIT QUALITY BY PAIN GROUP')
+print('FIT QUALITY BY PAIN GROUP')
 print('=' * 70)
 
 # Group is a between-subject variable, so collapse to one value per subject.
-per_subject = (trials_main.groupby(['subject_uid', 'dataset', 'group_label'])
-               .agg(mean_z=('r_z', 'mean'), median_r=('r', 'median'),
-                    n_trials=('r', 'size'))
+# This is also why there is no mixed model here as there was for trial type:
+# with one value per subject there are no repeated measures left to nest, and
+# a random intercept per subject would have nothing to pool.
+# Everything in this section uses nrmse, RMSE divided by that subject's own
+# VAS range, NOT raw RMSE. Raw RMSE tracks how wide a range a person uses on
+# the scale at rho = 0.78, so a raw-RMSE group difference would mostly be a
+# difference in rating style between the studies. Dividing it out leaves
+# "how far off the model is, as a fraction of the range this person uses".
+scored_groups = trials_main.copy()
+scored_groups['group_label'] = scored_groups['group_label'].str.capitalize()
+per_subject = (scored_groups.groupby(['subject_uid', 'dataset', 'group_label'])
+               .agg(nrmse=('nrmse', 'mean'), rmse=('rmse', 'mean'),
+                    n_trials=('rmse', 'size'))
                .reset_index())
-per_subject['mean_r'] = inverse_fisher_z(per_subject['mean_z'])
+
+# groupby drops rows with a null key, so subjects with no group in the
+# database are already gone by this point. Said out loud rather than implied.
+n_nogroup = scored_groups.loc[scored_groups['group_label'].isna(), 'subject_uid'].nunique()
+if n_nogroup:
+    print(f'({n_nogroup} subjects have no group in the database and are '
+          f'excluded from this section)')
 
 print(per_subject.groupby(['dataset', 'group_label'])
-      .agg(n_subjects=('subject_uid', 'size'), mean_r=('mean_r', 'mean'),
-           median_r=('median_r', 'median')).round(3).to_string())
+      .agg(n_subjects=('subject_uid', 'size'), mean_nrmse=('nrmse', 'mean'),
+           mean_rmse_vas=('rmse', 'mean')).round(3).to_string())
 
-# Group and dataset are confounded: plosONE contributes 137 controls and no
+# Group and dataset are confounded: plosONE contributes controls and no
 # patients, cLBP contributes patients and no controls. Pooling them would
 # compare studies, not groups. kneeOA is the only dataset holding all three
 # groups under one protocol, so that is the interpretable comparison.
 knee = per_subject[per_subject['dataset'] == 'kneeOA']
 print(f'\n--- kneeOA only: the one dataset with Control, Low and High '
       f'({len(knee)} subjects) ---')
-groups = [g['mean_z'].values for _, g in knee.groupby('group_label')]
+groups = [g['nrmse'].values for _, g in knee.groupby('group_label')]
 labels = sorted(knee['group_label'].unique())
 if len(groups) > 1:
     f_stat, p_anova = stats.f_oneway(*groups)
     h_stat, p_kw = stats.kruskal(*groups)
     print(f'   groups: {labels}')
-    print(f'   one-way ANOVA on z: F = {f_stat:.2f}, p = {p_anova:.3f}')
-    print(f'   Kruskal-Wallis    : H = {h_stat:.2f}, p = {p_kw:.3f}')
+    print(f'   one-way ANOVA on nrmse: F = {f_stat:.2f}, p = {p_anova:.3f}')
+    print(f'   Kruskal-Wallis        : H = {h_stat:.2f}, p = {p_kw:.3f}')
 
 clbp = per_subject[per_subject['dataset'] == 'cLBP'].dropna(subset=['group_label'])
 if clbp['group_label'].nunique() == 2:
-    hi = clbp[clbp['group_label'] == 'High']['mean_z']
-    lo = clbp[clbp['group_label'] == 'Low']['mean_z']
+    hi = clbp[clbp['group_label'] == 'High']['nrmse']
+    lo = clbp[clbp['group_label'] == 'Low']['nrmse']
     u, p_u = stats.mannwhitneyu(hi, lo)
     print(f'\n--- cLBP only: High (n={len(hi)}) vs Low (n={len(lo)}) ---')
-    print(f'   mean r: High {inverse_fisher_z(hi.mean()):.3f}, '
-          f'Low {inverse_fisher_z(lo.mean()):.3f}')
+    print(f'   mean nrmse: High {hi.mean():.3f}, Low {lo.mean():.3f}')
     print(f'   Mann-Whitney U = {u:.0f}, p = {p_u:.3f}')
 
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-sns.boxplot(data=per_subject, x='dataset', y='mean_r', hue='group_label',
-            ax=axes[0], fliersize=2)
-axes[0].set(xlabel='', ylabel='mean per-trial r', title='Fit quality by group')
-axes[0].legend(fontsize=8, title='')
-sns.stripplot(data=knee, x='group_label', y='mean_r', ax=axes[1],
-              order=['Control', 'Low', 'High'], size=5, alpha=0.7)
-sns.boxplot(data=knee, x='group_label', y='mean_r', ax=axes[1],
-            order=['Control', 'Low', 'High'], color='white', fliersize=0)
-axes[1].set(xlabel='', ylabel='mean per-trial r',
-            title='kneeOA only (same protocol, all 3 groups)')
+
+def between_subject_tests(df, col, order, label):
+    """Omnibus then every pair, Holm-corrected -- the same shape as the
+    trial-type section, but on one value per subject because both of these
+    factors are between-subject."""
+    sub = df[df[col].isin(order)]
+    present = [g for g in order if (sub[col] == g).sum() >= 5]
+    print(f'\n--- {label} ---')
+    print(sub.groupby(col)['nrmse'].agg(n='size', median='median')
+          .reindex(present).round(3).to_string())
+    if len(present) < 2:
+        return
+    h, p = stats.kruskal(*[sub.loc[sub[col] == g, 'nrmse'] for g in present])
+    print(f'  Kruskal-Wallis: H = {h:.2f}, p = {p:.4f}')
+    pairs = list(combinations(present, 2))
+    raw = [stats.mannwhitneyu(sub.loc[sub[col] == a, 'nrmse'],
+                              sub.loc[sub[col] == b, 'nrmse'])[1]
+           for a, b in pairs]
+    for (a, b), pr, pa in zip(pairs, raw, multipletests(raw, method='holm')[1]):
+        print(f'    {a + " vs " + b:22s} p = {pr:.4f}   (Holm {pa:.4f})')
+
+
+between_subject_tests(per_subject, 'group_label', GROUP_ORDER,
+                      'pain group, all datasets pooled')
+between_subject_tests(per_subject, 'dataset', DATASET_ORDER, 'dataset')
+
+# Kept even though the kneeOA panel is gone: pooling groups across datasets
+# compares studies as much as groups, because plosONE supplies controls and no
+# patients and cLBP supplies patients and no controls. kneeOA is the only
+# dataset holding all three groups under one protocol, so this is the number
+# to quote if the pooled comparison is challenged.
+between_subject_tests(per_subject[per_subject['dataset'] == 'kneeOA'],
+                      'group_label', GROUP_ORDER,
+                      'pain group within kneeOA only (unconfounded)')
+
+
+def violin_panel(ax, df, col, order, colors, title):
+    sub = df[df[col].isin(order)]
+    present = [g for g in order if (sub[col] == g).any()]
+    sns.violinplot(data=sub, x=col, y='nrmse', order=present, hue=col,
+                   palette=colors, legend=False, cut=0, inner='box',
+                   linewidth=1.0, saturation=1.0, ax=ax)
+    for coll in ax.collections:
+        coll.set_alpha(.88)
+    for i, g in enumerate(present):
+        vals = sub.loc[sub[col] == g, 'nrmse']
+        ax.text(i, vals.max() + .012, f'{vals.median():.2f}', va='bottom',
+                ha='center', fontsize=9.5, color='0.15')
+        ax.text(i, vals.min() - .035, f'n={len(vals)}', va='top', ha='center',
+                fontsize=8, color='0.45')
+    ax.set(xlabel='', ylabel='model error (nRMSE)', title=title)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.set_ylim(sub['nrmse'].min() - .09, sub['nrmse'].max() + .07)
+
+
+def swarm_panel(ax, df, col, order, colors, title):
+    """One dot per subject. Used where n is small enough to show every person
+    -- kneeOA has ~30 per group, so a violin would be smoothing 30 points."""
+    sub = df[df[col].isin(order)]
+    present = [g for g in order if (sub[col] == g).any()]
+    sns.swarmplot(data=sub, x=col, y='nrmse', order=present, hue=col,
+                  palette=colors, legend=False, size=4.6, alpha=.92,
+                  linewidth=.4, edgecolor='white', ax=ax)
+    for i, g in enumerate(present):
+        vals = sub.loc[sub[col] == g, 'nrmse']
+        ax.hlines(vals.median(), i - .3, i + .3, color='black', lw=2.2,
+                  zorder=10)
+        ax.text(i, vals.max() + .012, f'{vals.median():.2f}', va='bottom',
+                ha='center', fontsize=9.5, color='0.15')
+        ax.text(i, vals.min() - .035, f'n={len(vals)}', va='top', ha='center',
+                fontsize=8, color='0.45')
+    ax.set(xlabel='', ylabel='model error (nRMSE)', title=title)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.set_ylim(sub['nrmse'].min() - .09, sub['nrmse'].max() + .07)
+
+
+# ---- FIGURE: pain group, pooled and then with dataset held fixed ----
+# The right panel is the one that survives the confound: pooled, "group" is
+# partly "which study", because plosONE supplies controls and no patients and
+# cLBP supplies patients and no controls.
+fig, axes = plt.subplots(1, 2, figsize=(10.5, 5.0))
+violin_panel(axes[0], per_subject, 'group_label', GROUP_ORDER, GROUP_COLORS,
+             'Fit by pain group\n(all datasets)')
+swarm_panel(axes[1], per_subject[per_subject['dataset'] == 'kneeOA'],
+            'group_label', GROUP_ORDER, GROUP_COLORS,
+            'Pain group within kneeOA\n(one protocol, all three groups)')
+axes[1].set_ylabel('')
 plt.tight_layout()
-plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_fit_by_group.png', dpi=150, bbox_inches='tight')
+plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_fit_by_paingroup.png',
+            dpi=200, bbox_inches='tight')
+plt.show()
+
+# ---- FIGURE: dataset on its own ----
+fig, ax = plt.subplots(figsize=(5.2, 5.0))
+violin_panel(ax, per_subject, 'dataset', DATASET_ORDER, DATASET_COLORS,
+             'Fit by dataset')
+plt.tight_layout()
+plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_fit_by_dataset.png',
+            dpi=200, bbox_inches='tight')
 plt.show()
 
 
 #%%
 # ==================================================================
-# Q3. Does the fit degrade across repeated trials?
+# Does the group null hold inside every trial type?
 # ==================================================================
+# The pooled group comparison is null, but it averages over trial types. If
+# the model failed specifically on, say, offset trials in high-pain subjects,
+# that would be invisible there. So: group compared WITHIN each trial type.
 print('\n' + '=' * 70)
-print('Q3. FIT QUALITY ACROSS REPEATED TRIALS')
+print('FIT QUALITY BY TRIAL TYPE x PAIN GROUP')
 print('=' * 70)
-print("""
-CAVEAT. Each subject has ONE parameter set fitted across ALL their trials, so
-the optimiser has already spread its error to minimise total MSE. That biases
-this test toward a U shape (good in the middle, worse at both ends) rather than
-a clean trend, and it cannot distinguish "the model gets worse" from "the
-compromise fit suits middle trials best". The strong version -- fit on trial 1,
-predict trials 2..n with frozen parameters -- needs a separate fitting run.
-Read what follows as a first look.
-""")
 
-# trial_order ranks trials within a session. cLBP encodes a second visit as
-# trial_num + 100, and those visits are months apart, so order restarts at 1
-# for visit 2 rather than continuing to 101.
-ordered = trials_main.dropna(subset=['trial_order']).copy()
-ordered['session'] = (ordered['subject_uid'] + '_v'
-                      + ordered['visit'].astype(int).astype(str))
+# The comparison inside each panel is BETWEEN subjects (group), so this uses
+# nrmse for the same reason the section above does.
+per_subj_type = (scored_groups[scored_groups['trial_type'].isin(COMMON_TRIAL_TYPES)]
+                 .groupby(['subject_uid', 'dataset', 'group_label',
+                           'trial_type'], observed=True)
+                 .agg(nrmse=('nrmse', 'mean'), rmse=('rmse', 'mean'),
+                      n_trials=('rmse', 'size'))
+                 .reset_index())
 
-print('median r by position in session (first 12):')
-pos = (ordered[ordered['trial_order'] <= 12]
-       .groupby(['dataset', 'trial_order'])['r'].median().unstack().round(3))
-print(pos.to_string())
 
-# Random slope per subject: subjects may drift at different rates, and a
-# random-intercept-only model would treat that as noise. trial_type is a
-# covariate because trial order and type are not fully crossed.
-ordered['trial_type_c'] = ordered['trial_type'].astype(str)
-m3 = smf.mixedlm('r_z ~ trial_order + C(dataset) + C(trial_type_c)', ordered,
-                 groups=ordered['subject_uid'],
-                 re_formula='~trial_order').fit()
-print('\nMixed model  r_z ~ trial_order + dataset + trial_type,')
-print('             random intercept AND slope per subject')
-print(m3.summary().tables[1])
+def group_within_trial_type(df, scope):
+    """Kruskal across pain groups separately inside each trial type, then Holm
+    across the four tests -- four looks at the same question is four chances."""
+    rows, raw = [], []
+    for tt in PLOT_ORDER:
+        sub = df[(df['trial_type'] == tt) & df['group_label'].isin(GROUP_ORDER)]
+        present = [g for g in GROUP_ORDER if (sub['group_label'] == g).sum() >= 5]
+        if len(present) < 2:
+            continue
+        h, p = stats.kruskal(*[sub.loc[sub['group_label'] == g, 'nrmse']
+                               for g in present])
+        med = {g: sub.loc[sub['group_label'] == g, 'nrmse'].median()
+               for g in present}
+        rows.append({'trial_type': tt, 'groups': '/'.join(present),
+                     **{f'med_{g}': round(v, 3) for g, v in med.items()},
+                     'H': round(h, 2)})
+        raw.append(p)
+    if not rows:
+        return
+    out = pd.DataFrame(rows)
+    out['p'] = np.round(raw, 4)
+    out['p_holm'] = np.round(multipletests(raw, method='holm')[1], 4)
+    print(f'\n--- {scope} ---')
+    print(out.to_string(index=False))
 
-slope = m3.params.get('trial_order', np.nan)
-pval = m3.pvalues.get('trial_order', np.nan)
-print(f'\ntrial_order slope = {slope:+.5f} z-units per trial, p = {pval:.3g}')
-if np.isfinite(pval) and pval < 0.05:
-    direction = 'DEGRADES' if slope < 0 else 'IMPROVES'
-    r_start = inverse_fisher_z(m3.params['Intercept'])
-    r_10 = inverse_fisher_z(m3.params['Intercept'] + 10 * slope)
-    print(f'-> fit {direction} across trials; over 10 trials that is '
-          f'r {r_start:.3f} -> {r_10:.3f}')
-else:
-    print('-> no reliable linear change across trials')
 
-# Subjects with two visits are a built-in replication: if the model degrades
-# within a session, a second session months later should show the same pattern
-# starting fresh rather than continuing to decline.
-two_visit = (ordered.groupby('subject_uid')['visit'].nunique()
-             .loc[lambda s: s > 1].index)
-print(f'\n--- {len(two_visit)} subjects have two visits (within-subject replication) ---')
-if len(two_visit):
-    tv = ordered[ordered['subject_uid'].isin(two_visit)]
-    print(tv.groupby(['visit', 'trial_order'])['r'].median().unstack(0).round(3).to_string())
-    for v, g in tv.groupby('visit'):
-        if g['subject_uid'].nunique() > 2:
-            mv = smf.mixedlm('r_z ~ trial_order', g,
-                             groups=g['subject_uid']).fit()
-            print(f'   visit {int(v)}: slope = {mv.params["trial_order"]:+.5f}, '
-                  f'p = {mv.pvalues["trial_order"]:.3f}')
+group_within_trial_type(per_subj_type, 'all datasets pooled (confounded)')
+group_within_trial_type(per_subj_type[per_subj_type['dataset'] == 'kneeOA'],
+                        'kneeOA only (unconfounded)')
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-for ds, g in ordered[ordered['trial_order'] <= 24].groupby('dataset'):
-    s = g.groupby('trial_order')['r'].agg(['median', 'size'])
-    s = s[s['size'] >= 20]
-    axes[0].plot(s.index, s['median'], marker='o', ms=4, label=ds)
-axes[0].set(xlabel='trial position within session', ylabel='median per-trial r',
-            title='Does fit quality change across a session?')
-axes[0].legend(fontsize=8)
-axes[0].grid(alpha=0.3)
-
-if len(two_visit):
-    tv = ordered[ordered['subject_uid'].isin(two_visit)]
-    for v, g in tv.groupby('visit'):
-        s = g.groupby('trial_order')['r'].median()
-        axes[1].plot(s.index, s.values, marker='o', ms=4,
-                     label=f'visit {int(v)}')
-    axes[1].set(xlabel='trial position within session', ylabel='median per-trial r',
-                title=f'Two-visit subjects (n={len(two_visit)}): does it reset?')
-    axes[1].legend(fontsize=8)
-    axes[1].grid(alpha=0.3)
+fig, ax = plt.subplots(figsize=(9.5, 5.2))
+sub = per_subj_type[per_subj_type['group_label'].isin(GROUP_ORDER)]
+sns.violinplot(data=sub, x='trial_type', y='nrmse', order=PLOT_ORDER,
+               hue='group_label', hue_order=GROUP_ORDER, palette=GROUP_COLORS,
+               cut=0, inner='box', linewidth=.9, saturation=1.0, ax=ax)
+for coll in ax.collections:
+    coll.set_alpha(.88)
+ax.set_xticks(range(len(PLOT_ORDER)))
+ax.set_xticklabels([TRIAL_LABELS[tt] for tt in PLOT_ORDER])
+ax.set(xlabel='', ylabel='model error (nRMSE)', title='Fit by trial type and pain group')
+ax.spines[['top', 'right']].set_visible(False)
+ax.legend(fontsize=8, title='', frameon=False, ncol=3, loc='lower right')
 plt.tight_layout()
-plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_fit_across_trials.png', dpi=150, bbox_inches='tight')
+plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_fit_by_trialtype_group.png',
+            dpi=200, bbox_inches='tight')
 plt.show()
-
-
-#%%
-# ==================================================================
-# Sensitivity: do the answers hold if bound-flagged subjects are kept?
-# ==================================================================
-print('\n' + '=' * 70)
-print('SENSITIVITY: including the subjects whose parameters hit a bound')
-print('=' * 70)
-alt = trials.copy()
-alt['trial_type_c'] = alt['trial_type'].astype(str)
-for label, d in [('excluding flagged', trials_main.assign(
-                      trial_type_c=trials_main['trial_type'].astype(str))),
-                 ('including flagged', alt)]:
-    c = d[d['trial_type'].isin(COMMON_TRIAL_TYPES)]
-    on = c[c['trial_type'] == 'onset']['r'].median()
-    off = c[c['trial_type'] == 'offset']['r'].median()
-    o = d.dropna(subset=['trial_order'])
-    mm = smf.mixedlm('r_z ~ trial_order + C(dataset) + C(trial_type_c)', o,
-                     groups=o['subject_uid']).fit()
-    print(f'{label:20s} n={d["subject_uid"].nunique():3d} subjects | '
-          f'median r {d["r"].median():.3f} | onset {on:.3f} vs offset {off:.3f} | '
-          f'trial_order slope {mm.params["trial_order"]:+.5f} '
-          f'(p={mm.pvalues["trial_order"]:.3g})')
 
 
 #%%
@@ -442,126 +703,90 @@ for label, d in [('excluding flagged', trials_main.assign(
 # How variable is fit quality, within and between subjects?
 # ==================================================================
 # Everything here uses r, the zero-lag correlation Cecchi 2012 report, rather
-# than r2. r2 is the coefficient of determination -- it asks whether the model
-# beats a flat line at that trial's own mean -- so it divides by the variance
-# of the observed ratings. On trials where the subject barely moved the slider
-# that denominator is near zero and r2 explodes: the worst trial here scores
-# -298,065 with an ordinary MSE of 802, purely because the subject's ratings
-# had an SD of 0.58 VAS. Median MSE is flat across the whole r2 range, so the
-# model's actual errors are not what r2 is tracking. r is bounded at +/-1 and
-# has no such failure mode.
-#
-# Two distinct things vary, and they mean different things: how well the model
-# describes a person on average, and how consistently it does so across their
-# trials. Fitting well but erratically says some trials contain dynamics the
-# model misses; fitting poorly but uniformly says the model is wrong for that
-# person.
+# than r2. 
 print('\n' + '=' * 70)
-print('DISTRIBUTION OF FIT QUALITY (r)')
+print('DISTRIBUTION OF FIT QUALITY (RMSE, VAS)')
 print('=' * 70)
 
-MIN_TRIALS_FOR_SPREAD = 8   # a spread estimated from 3 trials is meaningless
-MIN_PAIN_SD = 2.0           # VAS; below this a trial is too flat to score
-
+# No flatness filter. A trial where the rating barely moves is a real
+# response, not an artifact, and dropping those took out hold trials three
+# times as often as offset trials -- which shrinks the very trial-type
+# contrast this file is measuring. pain_sd is still attached so it can be
+# used as a sensitivity analysis, but nothing is excluded on it.
+# SENSITIVITY: scored = scored[scored['pain_sd'] >= 2.0]
 data_df = pd.read_pickle(TRACES_FILE)
 pain_sd = (data_df.groupby(['subject_uid', 'trial_num'])['pain']
            .std().rename('pain_sd').reset_index())
 scored = trials_main.merge(pain_sd, on=['subject_uid', 'trial_num'], how='left')
-flat = scored['pain_sd'] < MIN_PAIN_SD
-print(f'{flat.sum()} of {len(scored)} trials have rating SD < {MIN_PAIN_SD} VAS '
-      f'and are excluded as too flat to score')
-scored = scored[~flat]
+print(f'{len(scored):,} scored trials, no flatness exclusion '
+      f"({(scored['pain_sd'] < 2.0).sum():,} have rating SD < 2 VAS and are kept)")
 
-# Spread is measured on the Fisher z scale. On the raw scale a subject whose
-# trials run 0.95-0.99 looks far more consistent than one running 0.55-0.75,
-# but that is the ceiling at 1 compressing the top of the range, not a real
-# difference in consistency.
+# Spread across a subject's trials, in VAS. RMSE needs no variance-stabilising
+# transform -- the Fisher z this used to run on existed only because r is
+# bounded at 1 and its spread is compressed near the ceiling.
 spread = (scored.groupby(['subject_uid', 'dataset'])
-          .agg(median_r=('r', 'median'), mean_z=('r_z', 'mean'),
-               sd_z=('r_z', 'std'),
-               iqr_r=('r', lambda x: x.quantile(.75) - x.quantile(.25)),
-               min_r=('r', 'min'), max_r=('r', 'max'),
-               n_trials=('r', 'size'))
+          .agg(median_rmse=('rmse', 'median'), mean_rmse=('rmse', 'mean'),
+               sd_rmse=('rmse', 'std'),
+               iqr_rmse=('rmse', lambda x: x.quantile(.75) - x.quantile(.25)),
+               min_rmse=('rmse', 'min'), max_rmse=('rmse', 'max'),
+               median_nrmse=('nrmse', 'median'), median_r=('r', 'median'),
+               n_trials=('rmse', 'size'))
           .reset_index())
-spread['mean_r'] = inverse_fisher_z(spread['mean_z'])
-eligible = spread[spread['n_trials'] >= MIN_TRIALS_FOR_SPREAD].copy()
 
-print(f'\n{len(spread)} subjects, {len(eligible)} with >= {MIN_TRIALS_FOR_SPREAD} trials')
-print('\nper-subject median r:')
-print(spread['median_r'].describe().round(3).to_string())
-print('\nper-subject spread across trials (SD on Fisher z scale):')
-print(eligible['sd_z'].describe().round(3).to_string())
+print(f'\n{len(spread)} subjects')
+print('\nper-subject median RMSE (VAS):')
+print(spread['median_rmse'].describe().round(2).to_string())
+print('\nper-subject spread across trials (SD of RMSE, VAS):')
+print(spread['sd_rmse'].describe().round(2).to_string())
 print('\nby dataset:')
-print(spread.groupby('dataset')[['median_r', 'sd_z', 'iqr_r', 'n_trials']]
+print(spread.groupby('dataset')[['median_rmse', 'sd_rmse', 'iqr_rmse',
+                                 'median_nrmse', 'n_trials']]
       .median().round(3).to_string())
 
-# Exemplars. Level and spread are not independent -- a subject who fits
-# uniformly badly has low spread for an uninteresting reason -- so each pick's
-# level is printed alongside its spread, and the scatter below shows where
-# each one sits in the joint distribution.
+# Exemplars for the trial-by-trial panels further down. Level and spread are
+# picked separately because a subject who fits uniformly badly would have low
+# spread for an uninteresting reason, so each pick's level is printed next to
+# its spread and the reader can judge.
 picks = {
-    'good fit': eligible.loc[eligible['median_r'].idxmax()],
-    'poor fit': eligible.loc[eligible['median_r'].idxmin()],
-    'high variance across trials': eligible.loc[eligible['sd_z'].idxmax()],
-    'low variance across trials': eligible.loc[eligible['sd_z'].idxmin()],
+    'good fit': spread.loc[spread['median_rmse'].idxmin()],
+    'poor fit': spread.loc[spread['median_rmse'].idxmax()],
+    'high variance across trials': spread.loc[spread['sd_rmse'].idxmax()],
+    'low variance across trials': spread.loc[spread['sd_rmse'].idxmin()],
 }
-print('\nexemplar subjects:')
-print(f'{"":30s}{"subject":<14}{"median r":>9}{"SD(z)":>8}{"IQR r":>8}'
-      f'{"min r":>8}{"max r":>8}{"trials":>8}')
+print('\nexemplar subjects (RMSE in VAS):')
+print(f'{"":30s}{"subject":<14}{"median":>9}{"SD":>8}{"IQR":>8}'
+      f'{"min":>8}{"max":>8}{"trials":>8}')
 for label, row in picks.items():
-    print(f'{label:<30s}{row["subject_uid"]:<14}{row["median_r"]:>9.3f}'
-          f'{row["sd_z"]:>8.3f}{row["iqr_r"]:>8.3f}{row["min_r"]:>8.3f}'
-          f'{row["max_r"]:>8.3f}{int(row["n_trials"]):>8d}')
+    print(f'{label:<30s}{row["subject_uid"]:<14}{row["median_rmse"]:>9.2f}'
+          f'{row["sd_rmse"]:>8.2f}{row["iqr_rmse"]:>8.2f}{row["min_rmse"]:>8.2f}'
+          f'{row["max_rmse"]:>8.2f}{int(row["n_trials"]):>8d}')
 
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+# Cumulative, not a histogram. RMSE is heavily right-skewed -- most trials
+# cluster in a narrow band with a long bad tail -- so on any density axis the
+# peak sets the scale and the tail vanishes. The ECDF has no bins and reads
+# directly: height at any x is the share of trials with error at or below x,
+# and three curves lying on top of each other is the claim being made.
+fig, ax = plt.subplots(figsize=(7.4, 4.8))
+for ds in DATASET_ORDER:
+    g = scored[scored['dataset'] == ds]
+    if g.empty:
+        continue
+    sns.ecdfplot(data=g, x='rmse', ax=ax, lw=2.1, color=DATASET_COLORS[ds],
+                 label=f'{ds}  (n={len(g):,}, median {g["rmse"].median():.1f})')
+    ax.plot(g['rmse'].median(), .5, 'o', ms=5, color=DATASET_COLORS[ds],
+            mec='white', mew=.8, zorder=5)
 
-ax = axes[0][0]
-for ds, g in scored.groupby('dataset'):
-    ax.hist(g['r'], bins=50, range=(-1, 1), alpha=0.5, label=ds)
-ax.axvline(0.88, color='crimson', ls='--', lw=1, label='Cecchi 2012 (complex)')
-ax.set(xlabel='per-trial r', ylabel='trials',
-       title=f'All {len(scored):,} scored trials\n'
-             f'median r = {scored["r"].median():.3f}')
-ax.legend(fontsize=8)
-
-ax = axes[0][1]
-for ds, g in spread.groupby('dataset'):
-    ax.hist(g['median_r'], bins=25, range=(0, 1), alpha=0.5, label=ds)
-ax.axvline(0.88, color='crimson', ls='--', lw=1)
-ax.set(xlabel="median r across that subject's trials", ylabel='subjects',
-       title=f'Per-subject median r (n={len(spread)})')
-ax.legend(fontsize=8)
-
-# If this cloud slopes, level and consistency are related, and the two
-# 'variance' picks are partly just picking on level.
-ax = axes[1][0]
-for ds, g in eligible.groupby('dataset'):
-    ax.scatter(g['median_r'], g['sd_z'], s=18, alpha=0.6, label=ds)
-for label, row in picks.items():
-    ax.scatter(row['median_r'], row['sd_z'], s=140, facecolors='none',
-               edgecolors='k', linewidths=1.5, zorder=5)
-    ax.annotate(row['subject_uid'], (row['median_r'], row['sd_z']),
-                textcoords='offset points', xytext=(6, 6), fontsize=7)
-rho, p_rho = stats.spearmanr(eligible['median_r'], eligible['sd_z'])
-ax.set(xlabel='median r  (how well)',
-       ylabel='SD of Fisher z across trials  (how consistently)',
-       title=f'Level vs consistency (Spearman ρ={rho:.2f}, p={p_rho:.2g})\n'
-             'circled = exemplars plotted below')
-ax.legend(fontsize=8)
-
-# Every subject as a vertical range, sorted -- shows at a glance how much of
-# the variability is between subjects and how much is within them.
-ax = axes[1][1]
-srt = eligible.sort_values('median_r').reset_index(drop=True)
-ax.vlines(srt.index, srt['min_r'], srt['max_r'], color='0.8', lw=0.8)
-ax.scatter(srt.index, srt['median_r'], s=10, color='crimson', zorder=3)
-ax.axhline(0.88, color='crimson', ls='--', lw=1)
-ax.set(xlabel='subject (sorted by median r)', ylabel='r', ylim=(-1.05, 1.05),
-       title='Each subject: median (red) and full range across trials (grey)')
-
+ax.axhline(.5, color='0.8', lw=.8, zorder=0)
+ax.set(xlabel='model error (RMSE, VAS) per trial',
+       ylabel='proportion of trials at or below',
+       xlim=(0, np.nanpercentile(scored['rmse'], 99)), ylim=(0, 1),
+       title=f'Per-trial fit, all {len(scored):,} trials  '
+             f'(median RMSE = {scored["rmse"].median():.1f} VAS)')
+ax.spines[['top', 'right']].set_visible(False)
+ax.legend(fontsize=8, frameon=False, loc='upper left')
 plt.tight_layout()
 plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_fit_quality_distribution.png',
-            dpi=150, bbox_inches='tight')
+            dpi=200, bbox_inches='tight')
 plt.show()
 
 
@@ -577,168 +802,14 @@ for label, row in picks.items():
     tag = label.replace(' ', '_')
     print(f'\n{label}: {uid}  '
           f'(ᾱ={p["alpha_bar"]:.2f}, γ̄={p["gamma_bar"]:.3f}, θ={p["theta"]:.1f}°C, '
-          f'median r={row["median_r"]:.3f}, r range {row["min_r"]:.2f}-{row["max_r"]:.2f})')
+          f'median RMSE={row["median_rmse"]:.1f} VAS, '
+          f'range {row["min_rmse"]:.1f}-{row["max_rmse"]:.1f})')
     plot_subject_trials(
         data_df[data_df['subject_uid'] == uid],
         {'alpha_bar': p['alpha_bar'], 'gamma_bar': p['gamma_bar'],
          'theta': p['theta']},
         subject_uid=f'{uid} — {label}',
         save_path=f'{FIG_PATH}{datetime.now():%Y%m%d}_exemplar_{tag}_{uid}.png')
-
-
-#%%
-# ==================================================================
-# Eq. 1 (full, second-order) vs Eq. 2 (simplified, first-order)
-# ==================================================================
-# The motivating question: Eq. 2 drops the gamma*(T' - lambda)*p term, which is
-# the mechanism Cecchi describe as producing offset analgesia, and Eq. 2 does
-# fit offset trials worst. Does restoring that term close the gap?
-#
-# Eq. 1 NESTS Eq. 2 (large beta and lambda recover it), so the full model can
-# never have a higher SSE at a true optimum, and "is it better?" is not a
-# meaningful question on its own -- more parameters always fit tighter. The
-# question AIC asks is whether it is better by more than three extra
-# parameters buy, which is the comparison Cecchi report.
-FULL_SUBJECT_CSV = sorted(glob.glob(DATA_PATH + '*_model_fits_subject_full.csv'))
-FULL_TRIAL_CSV = sorted(glob.glob(DATA_PATH + '*_model_fits_trial_full.csv'))
-
-if not FULL_SUBJECT_CSV:
-    print('\n(no full-model fits found; skipping the model comparison)')
-else:
-    full = pd.read_csv(FULL_SUBJECT_CSV[-1])
-    full_trials = pd.read_csv(FULL_TRIAL_CSV[-1])
-    full['at_bounds'] = full['at_bounds'].fillna('')
-    n_full = len(full)
-    full = full[~full['dataset'].isin(EQ1_STALE_DATASETS)]
-    full_trials = full_trials[~full_trials['dataset'].isin(EQ1_STALE_DATASETS)]
-    print(f'Eq. 1: dropped {EQ1_STALE_DATASETS} as pre-site-split '
-          f'({n_full} -> {len(full)} fits)')
-    print('\n' + '=' * 70)
-    print('MODEL COMPARISON: Eq. 1 (second-order) vs Eq. 2 (first-order)')
-    print('=' * 70)
-    print(f'full-model fits: {os.path.basename(FULL_SUBJECT_CSV[-1])} ({len(full)} subjects)')
-
-    # --- did the search actually explore? -------------------------------
-    # Eq.1 was seeded at the Eq.2-equivalent point (beta = lambda = 30). If most
-    # subjects never left it, a null result would mean "the optimiser did not
-    # look", not "the rate term does not help", and nothing below is
-    # interpretable. This check comes first for that reason.
-    SEED_SCALE = 30.0
-    at_seed = (((full['beta'] - SEED_SCALE).abs() < 0.01) &
-               ((full['lam'] - SEED_SCALE).abs() < 0.01))
-    print(f'\nOptimiser diagnostic: {at_seed.sum()}/{len(full)} ({at_seed.mean():.0%}) '
-          f'never moved off the seed.')
-    print('  A null result is only meaningful because this is small.')
-
-    # --- what regime did each subject land in? --------------------------
-    # These ramps move at roughly 1-1.5 degC/s, so lambda well above that makes
-    # (T' - lambda) effectively constant and the rate term inert -- the full
-    # model has chosen to behave like the simplified one.
-    LAMBDA_INERT = 12.0
-    full['regime'] = np.where(full['lam'] > LAMBDA_INERT,
-                              'rate term inert (~Eq. 2)', 'rate term live')
-    print(f'\nWhere the rate term ended up (lambda vs the ~1.5 degC/s ramp rate):')
-    print(full.groupby('regime')
-          .agg(n_subjects=('r', 'size'),
-               r_full=('r', 'median'), r_simplified=('r_simplified', 'median'),
-               beta=('beta', 'median'), lam=('lam', 'median')).round(3).to_string())
-
-    # --- AIC ------------------------------------------------------------
-    # AIC = n*ln(SSE/n) + 2k for Gaussian residuals. k counts fitted parameters:
-    # 3 for Eq. 2 (alpha_bar, gamma_bar, theta) and 5 for Eq. 1. The variance
-    # parameter is common to both and cancels in the difference.
-    #
-    # CAVEAT worth carrying into any write-up: AIC assumes independent
-    # residuals, and consecutive samples in a pain trace are strongly
-    # autocorrelated. The effective sample size is therefore far below
-    # n_points, so these values overstate the evidence for BOTH models. Petre
-    # 2017 use ARIMA errors for exactly this reason. Read the direction and the
-    # subject counts, not the absolute magnitudes.
-    K_SIMPLE, K_FULL = 3, 5
-    cmp = full.merge(subjects[['subject_uid', 'sse', 'n_points']]
-                     .rename(columns={'sse': 'sse_simplified',
-                                      'n_points': 'n_points_simplified'}),
-                     on='subject_uid', how='inner')
-    n = cmp['n_points']
-    cmp['aic_full'] = n * np.log(cmp['sse'] / n) + 2 * K_FULL
-    cmp['aic_simplified'] = n * np.log(cmp['sse_simplified'] / n) + 2 * K_SIMPLE
-    cmp['delta_aic'] = cmp['aic_full'] - cmp['aic_simplified']   # negative favours Eq. 1
-
-    print(f'\nAIC across {len(cmp)} subjects (negative ΔAIC favours the full model):')
-    print(f'  median ΔAIC            : {cmp["delta_aic"].median():+.1f}')
-    for lo, hi, label in [(-np.inf, -10, 'Eq. 1 strongly favoured (ΔAIC < -10)'),
-                          (-10, -2, 'Eq. 1 favoured (-10 to -2)'),
-                          (-2, 2, 'indistinguishable (-2 to +2)'),
-                          (2, 10, 'Eq. 2 favoured (+2 to +10)'),
-                          (10, np.inf, 'Eq. 2 strongly favoured (> +10)')]:
-        m = (cmp['delta_aic'] > lo) & (cmp['delta_aic'] <= hi)
-        print(f'    {label:<40s} {m.sum():3d} ({m.mean():.0%})')
-    print('\n  by regime:')
-    print(cmp.groupby('regime')['delta_aic']
-          .agg(n='size', median='median',
-               pct_favouring_full=lambda x: (x < -2).mean() * 100).round(1).to_string())
-
-    # --- the question the run existed for -------------------------------
-    # Eq. 2 fits offset trials worst. If the rate term is what offset trials
-    # need, the full model should improve them specifically -- not uniformly.
-    print(f'\nPer-trial fit by trial type, both models (median r):')
-    a = (trials.groupby('trial_type')['r'].median().rename('Eq. 2'))
-    b = (full_trials.groupby('trial_type')['r'].median().rename('Eq. 1'))
-    bytype = pd.concat([a, b], axis=1)
-    bytype['gain'] = bytype['Eq. 1'] - bytype['Eq. 2']
-    print(bytype.round(3).to_string())
-
-    paired = (trials[['subject_uid', 'trial_num', 'trial_type', 'r']]
-              .rename(columns={'r': 'r_simple'})
-              .merge(full_trials[['subject_uid', 'trial_num', 'r']]
-                     .rename(columns={'r': 'r_full'}),
-                     on=['subject_uid', 'trial_num'], how='inner'))
-    paired['dz'] = fisher_z(paired['r_full']) - fisher_z(paired['r_simple'])
-    paired = paired.dropna(subset=['dz'])
-    print(f'\nPaired per-trial gain (Fisher z), {len(paired):,} matched trials:')
-    for tt, g in paired.groupby('trial_type'):
-        if len(g) < 30:
-            continue
-        t_stat, p_val = stats.ttest_1samp(g['dz'], 0)
-        print(f'  {tt:<12s} n={len(g):5d}  mean Δz={g["dz"].mean():+.4f}  '
-              f't={t_stat:+6.2f}  p={p_val:.2g}')
-
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4.8))
-
-    ax = axes[0]
-    lim = [0, 1]
-    for reg, g in cmp.groupby('regime'):
-        ax.scatter(g['r_simplified'], g['r'], s=20, alpha=0.65, label=reg)
-    ax.plot(lim, lim, 'k--', lw=1, alpha=.5)
-    ax.set(xlim=lim, ylim=lim, xlabel='r — Eq. 2 (first-order)',
-           ylabel='r — Eq. 1 (second-order)',
-           title='Per-subject fit, both models\n(points above the line favour Eq. 1)')
-    ax.legend(fontsize=8)
-
-    ax = axes[1]
-    ax.hist(cmp['delta_aic'].clip(-60, 60), bins=45, color='#7f9bb5',
-            edgecolor='#33475b')
-    ax.axvline(0, color='k', lw=1)
-    ax.axvline(-2, color='crimson', ls='--', lw=1, label='ΔAIC = −2')
-    ax.set(xlabel='ΔAIC (clipped at ±60) — negative favours Eq. 1', ylabel='subjects',
-           title=f'AIC penalises the 2 extra parameters\nmedian ΔAIC = {cmp["delta_aic"].median():+.1f}')
-    ax.legend(fontsize=8)
-
-    ax = axes[2]
-    order = bytype.index.tolist()
-    x = np.arange(len(order)); w = 0.38
-    ax.bar(x - w/2, bytype['Eq. 2'], w, label='Eq. 2', color='#3d6b8f')
-    ax.bar(x + w/2, bytype['Eq. 1'], w, label='Eq. 1', color='#b3202c')
-    ax.set_xticks(x); ax.set_xticklabels(order, rotation=30, ha='right')
-    ax.set(ylabel='median per-trial r', ylim=(0, 1),
-           title='Does the rate term rescue offset trials?')
-    ax.legend(fontsize=8)
-
-    plt.tight_layout()
-    plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_model_comparison.png',
-                dpi=150, bbox_inches='tight')
-    plt.show()
-
 
 #%%
 # ==================================================================

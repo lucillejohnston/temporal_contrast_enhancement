@@ -67,7 +67,6 @@ def extract_threshold_from_data(pain_data, vas_threshold=5):
     return subject_theta
 
 
-
 ################# Cecchi 2012 Model Functions #################
 def cecchi2012_simplified(t, y, params, T_func):
     """

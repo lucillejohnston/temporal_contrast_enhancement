@@ -12,7 +12,7 @@ sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Py
 from alter_collab_analysis.utils.plotting_functions import *  
 
 # dataset -  single dataset currently
-dataset = 'kneeOA' # options: 'kneeOA', 'plosONE', 'cLBP', 'sEEG'
+dataset = 'cLBP' # options: 'kneeOA', 'plosONE', 'cLBP', 'sEEG'
 
 # File paths
 TRIAL_METRICS_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
@@ -41,76 +41,27 @@ for subject_id, trials in metrics_data.items():
 trial_metrics_df = pd.DataFrame(records)
 time_series_df = pd.DataFrame(time_series_trial_data)
 
+# Order matters: [0] is the offset trial, [1] is the onset trial (which
+# plosONE calls 'inv'). Later cells index these positionally.
 if dataset == 'kneeOA':
     stepped_trial_types = ['offset','onset']
 elif dataset == 'plosONE':
     stepped_trial_types = ['offset', 'inv']
+elif dataset == 'cLBP':
+    stepped_trial_types = ['offset', 'onset']
+else:
+    raise ValueError(f'No stepped trial types defined for dataset {dataset!r}')
     
-# %% 
-# =====================================================================
-# Determine habituators vs. sensitizers 
-# =====================================================================
-# Primary metric: slope of period C of hold trials (maybe as a whole or in sliding windows)
-def calculate_slope(trial_data, C_start=None, C_end=None):
-    period_c_data = trial_data[(trial_data['aligned_time'] >= C_start) & (trial_data['aligned_time'] <= C_end)]
-    period_c_data = period_c_data.dropna(subset=['pain']) # drop rows where pain is NaN (like in cLBP data)
-    x = period_c_data['aligned_time'].to_numpy()
-    y = period_c_data['pain'].to_numpy()
-    if len(np.unique(x)) < 2:
-        return np.nan
-    slope, intercept, r, p, se = stats.linregress(x, y)
-    return slope 
+# Hold-trial metrics and the habituator / sensitizer classification now live
+# in utils/hold_slope.py so that combining_datasets.py and the figure scripts
+# can use them without importing (and therefore running) this whole file.
+from alter_collab_analysis.utils.hold_slope import (
+    calculate_slope, calculate_windowed_difference, calculate_auc_difference,
+    calculate_normalized_time_aware_change, bootstrap_classification,
+    plot_hold_trials_for_subject)
 
-# Sensitivity analysis 1: windowed early vs. late difference (mean of last 5 s of hold - mean of first 5s of hold)
-def calculate_windowed_difference(trial_data, window_size=5, A_start=None, C_end=None):
-    early_window = trial_data[(trial_data['aligned_time'] >= A_start) & (trial_data['aligned_time'] < A_start + window_size)]
-    late_window = trial_data[(trial_data['aligned_time'] <= C_end) & (trial_data['aligned_time'] > C_end - window_size)]
-    
-    if len(early_window) == 0 or len(late_window) == 0:
-        return np.nan
-    
-    early_mean = early_window['pain'].mean()
-    late_mean = late_window['pain'].mean()
-    
-    return late_mean - early_mean
 
-# Sensitivity analysis 2: AUC last 10s - AUC first 10s of hold
-def calculate_auc_difference(trial_data, window_size=10, A_start=None, C_end=None):
-    
-    early_window = trial_data[(trial_data['aligned_time'] >= A_start) & (trial_data['aligned_time'] < A_start + window_size)]
-    late_window = trial_data[(trial_data['aligned_time'] <= C_end) & (trial_data['aligned_time'] > C_end - window_size)]
-    early_window = early_window.dropna(subset=['pain'])
-    late_window = late_window.dropna(subset=['pain'])
 
-    if len(early_window) == 0 or len(late_window) == 0:
-        return np.nan
-    
-    early_auc = np.trapezoid(early_window['pain'], early_window['aligned_time'])
-    late_auc = np.trapezoid(late_window['pain'], late_window['aligned_time'])
-    
-    return late_auc - early_auc
-
-# Sensitivity analysis 3: normalized time-aware pain change (second extrema - first extrema) / max 
-def calculate_normalized_time_aware_change(row, max_floor=5):
-    min_val = row.get('abs_min_val')
-    max_val = row.get('abs_max_val')
-    min_time = row.get('abs_min_time')
-    max_time = row.get('abs_max_time')
-    if pd.isna(min_val) or pd.isna(max_val) or pd.isna(min_time) or pd.isna(max_time):
-        return np.nan
-
-    if max_val <= max_floor or max_val == 0:
-        return np.nan
-
-    # first extrema in time, second extrema in time
-    if min_time <= max_time:
-        first_ext = min_val
-        second_ext = max_val
-    else:
-        first_ext = max_val
-        second_ext = min_val
-
-    return (second_ext - first_ext) / max_val * 100
 
 hold_trials = trial_metrics_df[trial_metrics_df['trial_type'].str.contains('hold')].copy()
 results = []
@@ -185,39 +136,6 @@ for col in hold_metrics_avg_per_subject.columns[1:]:
     plt.show()
 hold_metrics_avg_per_subject.describe()
 
-###################################################################################### Classify subjects
-# Bootstrapping approach to determine classification based on any metric
-def bootstrap_classification(metric_values, n_boot=10000, ci=95, random_state=None):
-    if random_state is not None:
-        np.random.seed(random_state)
-
-    metric_values = metric_values.dropna().values
-    if len(metric_values) == 0:
-        print("Warning: No valid metric values for classification. Returning 'unclassified'.")
-        return 'unclassified', np.nan, np.nan, np.nan
-
-    # Calculate observed mean
-    observed_mean = np.mean(metric_values)
-
-    # Generate bootstrap samples and calculate means
-    bootstrap_means = []
-    for _ in range(n_boot):
-        sample = np.random.choice(metric_values, size=len(metric_values), replace=True)
-        bootstrap_means.append(np.mean(sample))
-
-    # Calculate confidence interval
-    lower_bound = np.percentile(bootstrap_means, (100 - ci) / 2)
-    upper_bound = np.percentile(bootstrap_means, 100 - (100 - ci) / 2)
-
-    # Classify based on whether CI is above or below zero
-    if lower_bound > 0:
-        classification = 'sensitizer'
-    elif upper_bound < 0:
-        classification = 'habituator'
-    else:
-        classification = 'no trend'
-    print(".")
-    return classification, observed_mean, lower_bound, upper_bound
 
 classification_results = []
 for subject_id, subject_trials in hold_metrics_df.groupby('subject'):
@@ -236,6 +154,18 @@ for subject_id, subject_trials in hold_metrics_df.groupby('subject'):
     })
 
 slope_classification_df = pd.DataFrame(classification_results)
+
+# Put the classification onto the trial-level table. Everything below that
+# compares trial types between habituators and sensitizers needs one table
+# holding both 'classification' and 'trial_type', and neither table has both on
+# its own: slope_classification_df is one row per subject, trial_metrics_df is
+# one row per trial. combining_datasets.py does the equivalent merge onto
+# unified_data; here it was missing, so those cells only ever worked when an
+# earlier run had already added the column.
+trial_metrics_df = trial_metrics_df.merge(
+    slope_classification_df[['subject', 'classification']],
+    on='subject', how='left'
+)
 
 #%% Plot results of the classification
 # Plot classification results
@@ -258,83 +188,6 @@ plt.title('Distribution of Subject Classifications')
 plt.xlabel('Mean (of all hold trials per subject) slope')
 plt.ylabel('Subjects')
 plt.legend()
-####################################################################################### Plot example subject for each group
-def plot_hold_trials_for_subject(subject_id, hold_metrics_df, time_series_df, title=None, time_window=None, savepath=None, ax1=None):
-    subject_hold_trials = hold_metrics_df[hold_metrics_df['subject'] == subject_id].copy()
-    if subject_hold_trials.empty:
-        print(f"No hold trials found for subject {subject_id}")
-        return
-
-    trial_nums = subject_hold_trials['trial_num'].unique()
-
-    subj_ts = time_series_df[
-        (time_series_df['subject'] == subject_id) &
-        (time_series_df['trial_num'].isin(trial_nums))
-    ].copy()
-
-    if subj_ts.empty:
-        print(f"No time series data found for subject {subject_id}")
-        return
-
-    all_times = subj_ts['aligned_time'].dropna().to_numpy()
-    time_grid = np.linspace(np.min(all_times), np.max(all_times), 400)
-
-    pain_curves = []
-
-    standalone = ax1 is None
-    if standalone:
-        fig, ax1 = plt.subplots(figsize=(12, 4))
-    ax2 = ax1.twinx()
-
-    for trial_num, trial_df in subj_ts.groupby('trial_num'):
-        trial_df = trial_df.sort_values('aligned_time')
-
-        x = trial_df['aligned_time'].to_numpy()
-        pain = trial_df['pain'].to_numpy()
-        temp = trial_df['temperature'].to_numpy()
-
-        if len(x) < 2:
-            continue
-
-        pain_interp = np.interp(time_grid, x, pain, left=np.nan, right=np.nan)
-        pain_curves.append(pain_interp)
-
-        # Plot individual pain traces
-        ax1.plot(x, pain, color='gray', alpha=0.25, linewidth=1)
-
-        # Plot individual temperature traces
-        ax2.plot(x, temp, color='red', alpha=0.8, linewidth=1)
-
-    # Mean pain trace
-    pain_curves = np.array(pain_curves)
-    mean_pain = np.nanmean(pain_curves, axis=0)
-    ax1.plot(time_grid, mean_pain, color='black', linewidth=3, label='Mean pain')
-
-    ax1.set_xlabel('Aligned time (s)')
-    ax1.set_xlim(0, 60)
-    ax1.set_ylabel('Pain')
-    ax2.set_ylabel('Temperature')
-    ax1.grid(True, alpha=0.3)
-
-    if time_window is not None:
-        ax1.set_xlim(time_window)
-
-    if title is None:
-        title = f"Subject {subject_id} hold trials"
-
-    ax1.set_title(title)
-
-    handles1, labels1 = ax1.get_legend_handles_labels()
-    ax1.legend(handles1, labels1, loc='best')
-
-    if standalone:
-        plt.tight_layout()
-
-        if savepath is not None:
-            plt.savefig(savepath, format='svg', bbox_inches='tight')
-
-        plt.show()
-
 
 hab_subject = slope_classification_df[
     slope_classification_df['classification'] == 'habituator'
@@ -359,9 +212,9 @@ plot_hold_trials_for_subject(nr_subject, hold_metrics_df, time_series_df, title=
 # ===================================================================
 
 # Filter for just habituators and sensitizers, and OA/OH trials
-context_analysis_df = slope_classification_df[
-    (slope_classification_df['classification'].isin(['habituator', 'sensitizer'])) &
-    (slope_classification_df['trial_type'].isin(stepped_trial_types))
+context_analysis_df = trial_metrics_df[
+    (trial_metrics_df['classification'].isin(['habituator', 'sensitizer'])) &
+    (trial_metrics_df['trial_type'].isin(stepped_trial_types))
 ].copy()
 
 # Add both preceding max and min pain
@@ -581,7 +434,7 @@ plt.show()
 # ==================================================================
 
 classification_output_path = '/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/classification.csv'
-classification_df.to_csv(classification_output_path, index=False)
+slope_classification_df.to_csv(classification_output_path, index=False)
 print(f"Saved subject classifications to {classification_output_path}")
 
 
@@ -599,18 +452,46 @@ print(f"=== QUERYING SQL DATABASE FOR GROUP INFO ===")
 try:
     conn = sqlite3.connect(sql_path)
     
-    # Simple query to get unique subject-group mappings
+    # Simple query to get unique subject-group mappings.
+    # metadata.study names the SUBSTUDY, so cLBP appears there as cLBP_DPOP and
+    # cLBP_MBPR and never as plain 'cLBP' -- querying WHERE study = 'cLBP'
+    # returned nothing and left every group label NaN. Fetch all and match on
+    # the prefix instead, keeping study so the subject numbers can be resolved.
     query = '''
-    SELECT DISTINCT 
+    SELECT DISTINCT
         subject,
-        COALESCE(NULLIF("group", ""), 'control') AS group_label
-    FROM metadata 
-    WHERE study = ?
+        study,
+        CASE WHEN study = 'plosONE' THEN COALESCE(NULLIF("group", ""), 'control')
+             ELSE NULLIF("group", "") END AS group_label
+    FROM metadata
     ORDER BY subject
     '''
-    
-    subject_groups_df = pd.read_sql_query(query, conn, params=(dataset,))
+
+    subject_groups_df = pd.read_sql_query(query, conn)
     conn.close()
+
+    # Every plosONE subject is a control, so a missing group there means
+    # control. cLBP has no controls at all, so defaulting a missing group to
+    # 'control' invented a group that does not exist in that study -- 3 cLBP
+    # subjects (DPOP 10, DPOP 22, MBPR 142) have a NULL group in the database.
+    # They are left as NaN and reported here rather than silently relabelled.
+    no_group = subject_groups_df[subject_groups_df['group_label'].isna()]
+    if len(no_group):
+        print(f"\n⚠️  {len(no_group)} subjects have no group in the database "
+              f"and are left unlabelled:")
+        print(no_group[['study', 'subject']].to_string(index=False))
+    subject_groups_df = subject_groups_df[
+        subject_groups_df['study'].str.startswith(dataset)].copy()
+
+    # metadata subject numbers are within-substudy, while trial_metrics_df is
+    # keyed on the lab's DPOP_ID (MBPR 1 -> 201). Without this the merge below
+    # matches the wrong cLBP person, or nobody.
+    if dataset == 'cLBP':
+        subject_groups_df['subject'] = np.where(
+            subject_groups_df['study'] == 'cLBP_MBPR',
+            ('2' + subject_groups_df['subject'].astype(int).astype(str).str.zfill(2)).astype(int),
+            subject_groups_df['subject'])
+    subject_groups_df = subject_groups_df.drop(columns='study').drop_duplicates()
     
     print(f"✅ Retrieved group info for {len(subject_groups_df)} subjects")
     print(f"Group distribution:")
@@ -651,6 +532,16 @@ except Exception as e:
 # PLOT SLOPE DISTRIBUTION WITH CLINICAL GROUPS OVERLAID
 # =========================================================
 
+# Habituator / sensitizer HERE means the slope of pain across period C of the
+# hold trials, which is what slope_classification_df holds (observed_mean_slope,
+# averaged over a subject's hold trials). This section originally referred to a
+# slopes_df that was never defined in this file -- it belongs to
+# session_trajectory.py, where the slope is max pain regressed on trial number
+# across the session. That is a different definition of habituator and is
+# deliberately not used here.
+slopes_df = (slope_classification_df[['subject', 'observed_mean_slope', 'classification']]
+             .rename(columns={'observed_mean_slope': 'slope'}))
+
 # Make sure we have the slopes_df with group_label
 # Merge group_label into slopes_df if not already there
 if 'group_label' not in slopes_df.columns:
@@ -659,6 +550,16 @@ if 'group_label' not in slopes_df.columns:
         on='subject', 
         how='left'
     )
+
+# Subjects with no row in the metadata table come out of that merge with a NaN
+# group label, and NaN is a float -- it survives .unique() and then breaks the
+# group.upper() calls below. Dropped once here rather than guarded in each of
+# the four loops that follow, and reported so the exclusion is visible.
+n_no_group = slopes_df['group_label'].isna().sum()
+if n_no_group:
+    print(f"{n_no_group} of {len(slopes_df)} subjects have no group label "
+          f"and are excluded from the group comparisons")
+    slopes_df = slopes_df.dropna(subset=['group_label'])
 
 print("=== SLOPE DISTRIBUTION BY CLINICAL GROUP ===")
 print("Slopes per group:")
@@ -686,9 +587,9 @@ for group in slopes_df['group_label'].unique():
 plt.axvline(x=0, color='black', linestyle='--', linewidth=2, label='No change')
 
 # Add labels and formatting
-plt.xlabel('Max Pain Slope (points per trial)', fontsize=12)
+plt.xlabel('Mean hold-trial slope in period C (VAS/s)', fontsize=12)
 plt.ylabel('Number of Subjects', fontsize=12)
-plt.title('Distribution of Individual Pain Classifications by Clinical Group', fontsize=14)
+plt.title('Distribution of Hold-Trial Slopes by Clinical Group', fontsize=14)
 plt.legend(fontsize=11)
 plt.grid(True, alpha=0.3)
 

@@ -12,18 +12,42 @@ import json
 from typing import Dict, Any
 import sys
 sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/')
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/behavior_modeling/')
 from utils.plotting_functions import *
+from utils.subject_ids import canonical_clbp_id
+from trial_windows import measure_temperature_edges, TrialWindowError
 
 # =========================================================
 # CONFIGURATION
 # =========================================================
 
-# Path to the cleaned, aligned trial data
-dataset = 'cLBP' # options: 'plosONE', 'kneeOA', 'cLBP'
-DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_trimmed_downsampled.json' # changed this to trimmed_downsampled so it is consistently 1Hz sampling across all datasets
+# Path to the cleaned, aligned trial data. This is the 10Hz file. The
+# trimmed_downsampled file this used to point at carries only subject,
+# trial_num, aligned_time, temperature and pain -- no trial_type, study or
+# site -- so nothing below could ever have run on it.
+dataset = os.environ.get('TCE_DATASET', 'cLBP')  # 'plosONE', 'kneeOA', 'cLBP'
+DATA_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_data_cleaned_aligned.json'
 OUTPUT_PATH = f'/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/data/alter_collab_data/{dataset}_trial_metrics.json'
 
-temp_change_offset = 0.67 # seconds, changing 1C in 1.5C/s
+# A/B/C windows are MEASURED from each trial's own temperature trace
+# (behavior_modeling/trial_windows.py) instead of counted forward from an
+# assumed 5 / 0.67 / 5 / 0.67 / 20s schedule anchored on a detected ramp time.
+# The thermode does not keep to that schedule: the real step into C runs
+# 0.7-1.7s later than assumed, so windows built that way straddle the step and
+# mix two stimulus levels. 0.15C is the right tolerance for this 10Hz data;
+# the 1Hz traces need 0.3 because their samples are averages.
+AT_LEVEL = 0.15
+
+# Length of period C used for the metrics, measured forward from the MEASURED
+# start of C. The start is what was wrong before and is now measured; the
+# duration is held fixed because auc_C is an integral and a longer window
+# inflates it. Measured C runs 20.4-21.1s in plosONE and kneeOA but 22-23s in
+# cLBP, whose traces are trimmed before the ramp down so C simply ends at the
+# last sample -- taking that at face value would make cLBP's auc_C ~15% larger
+# for a reason that is an artefact of trimming rather than a real difference.
+# Set to None to use the fully measured C_end instead.
+C_DURATION = 20.0
+
 window_size = 5
 period_c_duration = 20
 trial_definitions = {
@@ -75,8 +99,28 @@ df = pd.read_json(DATA_PATH, orient='records')
 # temperature_aligned_for_plot - temperature shifted for plotting
 
 # for kneeOA data, filter for site == forearm
-if dataset == 'kneeOA': 
+if dataset == 'kneeOA':
     df = df[df['site'] == 'forearm'].copy()
+
+# Only the cLBP file carries 'study' (cLBP_DPOP / cLBP_MBPR), because that is
+# the only dataset built from two substudies. Giving the other two a constant
+# study column lets the grouping below be written once for all three.
+if 'study' not in df.columns:
+    df['study'] = dataset
+
+# cLBP subject numbers are within-substudy, and 7 of them (1, 10, 22, 40, 43,
+# 48, 53) are used by BOTH substudies -- 7 pairs of different people sharing a
+# key. The output below is stored as structured_data[subject][trial_num], so
+# without this the second person of each pair overwrites the first. Mapping
+# onto the lab's DPOP_ID namespace (MBPR 1 -> 201) separates them and matches
+# what build_combined_traces.py already does, so the metrics and the traces
+# describe the same people.
+if dataset == 'cLBP':
+    df['subject_within_study'] = df['subject']
+    df['subject'] = [canonical_clbp_id(s, st)
+                     for s, st in zip(df['subject'], df['study'])]
+    print(f'cLBP: {df.groupby(["study"])["subject"].nunique().to_dict()} subjects '
+          f'-> {df["subject"].nunique()} distinct DPOP_IDs')
 
 
 #%%
@@ -95,71 +139,51 @@ def convert_to_serializable(obj: Any) -> Any:
         return obj.tolist()
     return obj
 
-def get_trial_ramp_time(trial_df, default_ramp_time=15.0):
-    """Calculate ramp time for a single trial"""
-    post_ramp = trial_df[trial_df['aligned_time'] > 5].copy()
-    if len(post_ramp) < 10:
-        return default_ramp_time
-    
-    temp_diff = post_ramp['temperature'].diff().rolling(3).mean().abs()
-    stable_mask = temp_diff < 0.1
-    
-    if stable_mask.any():
-        stable_time = post_ramp.loc[stable_mask, 'aligned_time'].iloc[0]
-        return stable_time
-    else:
-        return default_ramp_time
-    
-
 # Filter calibration trials matching T1 hold temperature
 import numpy as np
 from scipy.spatial.distance import euclidean
 
 # Time Window and AUC Functions
-def define_timewindows(trial_type, trial_definitions, base_offset):
+def measured_timewindows(trial_df, trial_type):
     """
-    Define the start and end times for the three periods based on the trial's temperature settings.
-    Args:
-        trial_type (str): The trial type key.
-        trial_definitions (dict): Mapping of trial_type to temperature sequence.
-        base_offset (float): Time offset for the start of the trial.
+    A/B/C windows for one trial, measured from its own temperature trace.
 
-    Returns:
-        dict: Keys 'A', 'B', 'C' mapping to (start, end) tuples.
+    Replaces define_timewindows (assumed 5 / 0.67 / 5 / 0.67 / 20s from a
+    detected ramp time) and get_trial_ramp_time. Detection is level-based:
+    find what temperature the thermode is sitting at, not how fast it is
+    changing -- see trial_windows.py for why the rate-based version fails.
+
+    Returns ({'A': (start, end), 'B': ..., 'C': ...}, raw_measurement) so the
+    first element drops into everything downstream unchanged.
+    Raises TrialWindowError if the trial's plateaus cannot be found.
     """
-    temperature_sequence = trial_definitions[trial_type]
-    # Period A: 5 seconds after base_offset
-    start_A = base_offset
-    end_A = start_A + 5
-    # Gap A→B (if the temperature changes)
-    gap_A_B = temp_change_offset if temperature_sequence[0] != temperature_sequence[1] else 0
-    # Period B: 5 seconds following gap_A_B
-    start_B = end_A + gap_A_B
-    end_B = start_B + 5
-    # Gap B→C (if the temperature changes)
-    gap_B_C = temp_change_offset if temperature_sequence[1] != temperature_sequence[2] else 0
-    # Period C: 20 seconds following gap_B_C
-    start_C = end_B + gap_B_C
-    end_C = start_C + 20
+    edges = measure_temperature_edges(
+        trial_df['aligned_time'].to_numpy(dtype=float),
+        trial_df['temperature'].to_numpy(dtype=float),
+        trial_type, at_level=AT_LEVEL, flat_tol=AT_LEVEL)
+    if C_DURATION is not None:
+        edges['C_end'] = min(edges['C_end'], edges['C_start'] + C_DURATION)
+    windows = {p: (edges[f'{p}_start'], edges[f'{p}_end']) for p in ['A', 'B', 'C']}
+    return windows, edges
 
-    return {'A': (start_A, end_A),
-            'B': (start_B, end_B),
-            'C': (start_C, end_C)}
-
-def compute_aucs(pain_series, trial_type, trial_definitions, base_offset):
+def compute_aucs(pain_series, time_windows):
     """
-    Compute AUCs over the time windows defined by the trial's temperature settings.
-    
+    AUC, mean rating and duration for each period.
+
     Parameters:
-        series (pd.Series): The pain (or similar) time series with a datetime/numeric index.
-        trial_type (str): The trial type, used to look up the period temperature settings.
-        base_offset (float): The starting offset for the analysis.
-    
+        pain_series (pd.Series): pain ratings indexed by aligned_time.
+        time_windows (dict): {'A': (start, end), ...} from measured_timewindows.
+
     Returns:
-        dict: A dictionary with AUCs for each period and the total AUC.
+        dict: auc_/mean_/duration per period, plus auc_total.
+
+    mean_* is new and is what cross-period or cross-dataset comparisons should
+    use. AUC scales with window length, and measured periods are not all
+    exactly 5/5/20s -- a step trial's period A runs ~5.3s because that is how
+    long the thermode actually held T1, while a hold trial's is 5.0s by
+    convention. Comparing their AUCs therefore compares window lengths as well
+    as pain; comparing their means does not.
     """
-    # Get boundaries for each period
-    time_windows = define_timewindows(trial_type, trial_definitions, base_offset)
     aucs = {}
     auc_total = 0
     for period in ['A', 'B', 'C']:
@@ -167,9 +191,12 @@ def compute_aucs(pain_series, trial_type, trial_definitions, base_offset):
         window = pain_series.loc[(pain_series.index >= start) & (pain_series.index <= end)]
         if window.empty:
             auc = np.nan
+            aucs[f'mean_{period}'] = np.nan
         else:
             auc = np.trapezoid(window.values, x=window.index)
+            aucs[f'mean_{period}'] = float(window.mean())
         aucs[f'auc_{period}'] = auc
+        aucs[f'{period}_duration'] = end - start
         auc_total += auc if not np.isnan(auc) else 0
     aucs['auc_total'] = auc_total
     return aucs
@@ -177,9 +204,9 @@ def compute_aucs(pain_series, trial_type, trial_definitions, base_offset):
 def extract_extrema(
         pain_series: pd.Series,
         trial_type: str,
+        time_windows: dict,
         mode: str = 'local',
         reference_times: dict = None,
-        base_offset: float = 5.0,               # In preprocessing, added 5s buffer before trial start
     ) -> dict:
     """
     Extract extrema (min/max) and related metrics from a pain series.
@@ -187,27 +214,25 @@ def extract_extrema(
     Parameters:
         pain_series (pd.Series): Pain ratings indexed by aligned_time.
         trial_type (str): The trial type key.
+        time_windows (dict): {'A': (start, end), ...} from measured_timewindows.
         mode (str): 'local' for local extrema, 'control' for extracting at reference times.
         reference_times (dict): Dict with 'min_time' and 'max_time' (used if mode='control').
-        base_offset (float): Time offset for the start of the trial.
     Returns:
         dict: Extrema values, times, peak-to-peak, and latency.
     """
-    if mode == 'local': # for offset, inv, stepdown trials 
-        return _extract_local_extrema(pain_series, trial_type, base_offset)
+    if mode == 'local': # for offset, inv, stepdown trials
+        return _extract_local_extrema(pain_series, trial_type, time_windows)
     elif mode == 'control': # for t1_hold, t2_hold trials
-        return _extract_control_extrema(pain_series, trial_type, reference_times, base_offset)
+        return _extract_control_extrema(pain_series, trial_type, reference_times, time_windows)
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
 def _extract_local_extrema(
-        pain_series: pd.Series, 
-        trial_type: str, 
-        base_offset: float
+        pain_series: pd.Series,
+        trial_type: str,
+        time_windows: dict
         )-> Dict[str, float]:
 
-        # Define time windows
-        time_windows = define_timewindows(trial_type, trial_definitions, base_offset)
         transition_time = time_windows['C'][0]  # Use the start of period C
         # Define search windows
         window_start = transition_time - window_size
@@ -256,10 +281,10 @@ def _extract_local_extrema(
         }
     
 def _extract_control_extrema(
-        pain_series: pd.Series, 
-        trial_type: str, 
-        reference_times: Dict[str, float], 
-        base_offset: float
+        pain_series: pd.Series,
+        trial_type: str,
+        reference_times: Dict[str, float],
+        time_windows: dict
         ) -> Dict[str, float]:
         """Extract time-yoked and absolute extrema for control trials"""
 
@@ -268,7 +293,6 @@ def _extract_control_extrema(
         abs_max_val = pain_series.max()
 
         # Get period C boundaries
-        time_windows = define_timewindows(trial_type, trial_definitions, base_offset) 
         c_start, c_end = time_windows['C']
 
         # Find minimum after max within period C only
@@ -405,6 +429,7 @@ def calc_normalized_pain_change(row, use_time_yoked=True):
 # Compute metrics for each individual trial
 trial_metrics_list = []
 subject_extrema_times = {}
+unmeasurable_trials = []
 
 # Extract stepped trials first to store their extrema times
 for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num', 'study']):
@@ -426,19 +451,25 @@ for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num',
     info = trial_type_info[trial_type]
     if info['kind'] == 'control':
         continue # skip control trials for now
-    trial_ramp_time = get_trial_ramp_time(trial_df)
-    # Compute AUCs 
-    aucs = compute_aucs(pain_series, trial_type, trial_definitions, base_offset=trial_ramp_time)
-    time_windows = define_timewindows(trial_type, trial_definitions, base_offset=trial_ramp_time)
+    # Measure this trial's A/B/C windows from its own temperature trace.
+    try:
+        time_windows, edges = measured_timewindows(trial_df, trial_type)
+    except TrialWindowError as e:
+        unmeasurable_trials.append((subject, trial_num, trial_type, str(e)))
+        continue
     time_window_record = {}
     for period in ['A', 'B', 'C']:
         start, end = time_windows[period]
         time_window_record[f'{period}_start'] = start
         time_window_record[f'{period}_end'] = end
+    time_window_record['P1'] = edges['P1']   # first plateau temperature, °C
+    time_window_record['P2'] = edges['P2']   # second plateau, or nan in holds
 
+    # Compute AUCs
+    aucs = compute_aucs(pain_series, time_windows)
     # Compute extrema
     extrema = extract_extrema(
-        pain_series, trial_type, mode='local', base_offset=trial_ramp_time)
+        pain_series, trial_type, time_windows, mode='local')
     # Store extrema times for later use with control trials
     subject_extrema_times[(int(subject), str(trial_type), int(trial_num))] = {
         'abs_min_time': extrema['abs_min_time'],
@@ -448,8 +479,9 @@ for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num',
     'subject': subject,
     'trial_num': trial_num,
     'trial_type': trial_type,
+    'study': study,
     **aucs,
-    **extrema,        
+    **extrema,
     **time_window_record
     }
     trial_metrics_list.append(record)
@@ -475,15 +507,23 @@ for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num',
     if info['kind'] != 'control':
         continue # skip stepped trials, already processed
 
-    # Compute AUCs 
-    trial_ramp_time = get_trial_ramp_time(trial_df)
-    aucs = compute_aucs(pain_series, trial_type, trial_definitions, base_offset=trial_ramp_time)
-    time_windows = define_timewindows(trial_type, trial_definitions, base_offset=trial_ramp_time)
+    # Measure this trial's A/B/C windows from its own temperature trace. Hold
+    # trials have no step, so only C is measured; A and B stay 5s each.
+    try:
+        time_windows, edges = measured_timewindows(trial_df, trial_type)
+    except TrialWindowError as e:
+        unmeasurable_trials.append((subject, trial_num, trial_type, str(e)))
+        continue
     time_window_record = {}
     for period in ['A', 'B', 'C']:
         start, end = time_windows[period]
         time_window_record[f'{period}_start'] = start
         time_window_record[f'{period}_end'] = end
+    time_window_record['P1'] = edges['P1']
+    time_window_record['P2'] = edges['P2']
+
+    # Compute AUCs
+    aucs = compute_aucs(pain_series, time_windows)
     # Get reference times from the corresponding stepped trial
     references = info['reference']
     if isinstance(references, list):                # for t1_hold: multiple references
@@ -509,8 +549,8 @@ for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num',
                 reference_times = {'abs_min_time': np.nan, 'abs_max_time': np.nan}
             # TEMP debugging prints to verify correct reference trial selection
             extrema = extract_extrema(
-                pain_series, trial_type, mode='control', 
-                reference_times=reference_times, base_offset=trial_ramp_time)
+                pain_series, trial_type, time_windows, mode='control',
+                reference_times=reference_times)
             
             # Add reference suffix only to reference-dependent extrema
             for k, v in extrema.items():
@@ -526,9 +566,10 @@ for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num',
             'subject': subject,
             'trial_num': trial_num,
             'trial_type': trial_type,
+            'study': study,
             **aucs,
             **extrema_dict,
-            **ref_trial_num_dict,        
+            **ref_trial_num_dict,
             **time_window_record
         }
         trial_metrics_list.append(record)
@@ -550,9 +591,9 @@ for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num',
         else:
                 reference_times = {'abs_min_time': np.nan, 'abs_max_time': np.nan}
         extrema = extract_extrema(
-            pain_series, trial_type, mode='control', 
-            reference_times=reference_times, base_offset=trial_ramp_time)
-        
+            pain_series, trial_type, time_windows, mode='control',
+            reference_times=reference_times)
+
         extrema_dict = {}
 
         # Add reference suffix only to reference-dependent extrema
@@ -567,6 +608,7 @@ for (subject, trial_num, study), trial_df in df.groupby(['subject', 'trial_num',
             'subject': int(subject),
             'trial_num': int(trial_num),
             'trial_type': trial_type,
+            'study': study,
             'reference_trial_num': ref_trial_num,
             **aucs,
             **extrema_dict,        
@@ -580,27 +622,58 @@ for record in trial_metrics_list:
     record['time_yoked_normalized_pain_change'] = calc_normalized_pain_change(record, use_time_yoked=True)
     record['abs_normalized_pain_change'] = calc_normalized_pain_change(record, use_time_yoked=False)
 
+if unmeasurable_trials:
+    print(f'\n⚠️  {len(unmeasurable_trials)} trials had no findable plateaus and '
+          f'were skipped:')
+    for subj, tnum, ttype, why in unmeasurable_trials[:10]:
+        print(f'     subject {subj} trial {tnum} ({ttype}): {why}')
+    if len(unmeasurable_trials) > 10:
+        print(f'     ... and {len(unmeasurable_trials) - 10} more')
+
 # Convert to serializable format and organize by subject
 structured_data = {}
+overwritten = []
 for record in trial_metrics_list:
     subject = int(record['subject'])
     trial_num = int(record['trial_num'])
-    
+
     if subject not in structured_data:
         structured_data[subject] = {}
-    
+    # Two records on one key means two different people sharing a subject
+    # number -- the cLBP DPOP/MBPR case this script now re-codes against. If it
+    # ever fires again, one person's metrics are being discarded.
+    if trial_num in structured_data[subject]:
+        overwritten.append((subject, trial_num,
+                            structured_data[subject][trial_num].get('study'),
+                            record.get('study')))
+
     # Convert all values to JSON-serializable format
     clean_record = {}
     for key, value in record.items():
         clean_record[key] = convert_to_serializable(value)
-    
+
     structured_data[subject][trial_num] = clean_record
+
+if overwritten:
+    raise RuntimeError(
+        f'{len(overwritten)} trials collided on (subject, trial_num) and would '
+        f'be silently overwritten, e.g. {overwritten[:3]}. Subject IDs are not '
+        f'unique -- fix the namespace before trusting this output.')
 
 # Save as JSON
 with open(OUTPUT_PATH, 'w') as f:
     json.dump(structured_data, f, indent=2)
 
-print(f"Trial metrics saved to {OUTPUT_PATH}")
+print(f"\nTrial metrics saved to {OUTPUT_PATH}")
+print(f'  {len(structured_data)} subjects, '
+      f'{sum(len(v) for v in structured_data.values()):,} trials')
+
+# The cells below are interactive: the plot asks for trial types that only some
+# datasets have, and the debugging block is pinned to one subject and trial. Set
+# TCE_METRICS_ONLY=1 to stop here when running the file straight through for all
+# three datasets.
+if os.environ.get('TCE_METRICS_ONLY'):
+    sys.exit(0)
 
 # %%
 # ========================================================

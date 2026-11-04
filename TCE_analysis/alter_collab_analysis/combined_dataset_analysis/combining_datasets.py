@@ -48,6 +48,21 @@ for dataset in datasets:
     # Load trial time series data
     trial_data_df = pd.read_json(trial_data_path, orient='records')
     trial_data_df['dataset'] = dataset
+    # kneeOA was stimulated at forearm and knee, but the metrics are forearm
+    # only. Trial numbers overlap between the two sites (forearm 1-15, knee
+    # 12-30), so without this the joins below pull knee samples into forearm
+    # trials 12-15.
+    if dataset == 'kneeOA':
+        trial_data_df = trial_data_df[trial_data_df['site'] == 'forearm'].copy()
+    # The metrics are keyed on the lab's DPOP_ID (MBPR 1 -> 201), which is what
+    # keeps the 7 subject numbers shared by a DPOP and an MBPR subject apart.
+    # The raw traces still use the within-substudy number, so map them across
+    # or the joins below match the wrong person -- or nobody.
+    if dataset == 'cLBP':
+        trial_data_df['subject'] = np.where(
+            trial_data_df['study'] == 'cLBP_MBPR',
+            ('2' + trial_data_df['subject'].astype(int).astype(str).str.zfill(2)).astype(int),
+            trial_data_df['subject'])
     print(f"  Trial time series: {len(trial_data_df)} records")
     # Add to combined lists
     combined_trial_metrics.append(metrics_df)
@@ -582,8 +597,15 @@ plt.show()
 # ######################################## 3. HABITUATORS VS SENSITIZERS ANALYSIS ###############################
 # ================================================================================================================
 import sys
-sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/single_dataset_analysis/')
-from habituator_sensitizers_ControlTrial import calculate_slope, calculate_windowed_difference, calculate_auc_difference, calculate_normalized_time_aware_change, bootstrap_classification, plot_hold_trials_for_subject
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/')
+# These live in utils/hold_slope.py. They used to be imported from
+# habituator_sensitizers_ControlTrial, but `from x import f` runs all of x,
+# so getting them meant running that file's whole cLBP analysis first.
+from utils.hold_slope import (calculate_slope, calculate_windowed_difference,
+                              calculate_auc_difference,
+                              calculate_normalized_time_aware_change,
+                              bootstrap_classification,
+                              plot_hold_trials_for_subject)
 
 hold_trials = unified_data[unified_data['trial_type'].astype(str).str.contains('hold', case=False, na=False)].copy()
 hold_results = []

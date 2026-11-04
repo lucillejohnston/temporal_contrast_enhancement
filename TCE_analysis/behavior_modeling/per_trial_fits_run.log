@@ -1,0 +1,5 @@
+warm starts from 20261007_model_fits_subject_full.csv (353 subjects, Eq. 1)
+  site filter (forearm): 353 -> 251 fit units
+  102 subject fits have no matching traces, skipped
+fitting 251 subjects on 12 workers...
+[Parallel(n_jobs=12)]: Using backend LokyBackend with 12 concurrent workers.

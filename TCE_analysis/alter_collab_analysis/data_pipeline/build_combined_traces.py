@@ -25,6 +25,10 @@ Updated: 9/19/26
 #%%
 import os
 import sqlite3
+import sys
+
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/'
+                'Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/')
 
 import numpy as np
 import pandas as pd
@@ -63,26 +67,10 @@ SUBJECT_OFFSETS = {'plosONE': 10_000, 'kneeOA': 20_000, 'cLBP': 30_000}
 
 
 #%%
-def canonical_clbp_id(subject, study):
-    """
-    Map a within-substudy cLBP subject number onto the lab's DPOP_ID namespace.
-
-    MYP_DPOP_MBPR_DATA_09062023.csv uses DPOP_ID as the master ID for both
-    substudies. DPOP subjects keep their own number (1-57); MBPR subjects are
-    re-coded by prefixing a '2' onto a zero-padded MBPR ID:
-
-        MBPR 1 -> 201      MBPR 53  -> 253
-        MBPR 10 -> 210     MBPR 101 -> 2101
-        MBPR 22 -> 222     MBPR 145 -> 2145
-
-    This holds for every MBPR row in that file, and it is what makes DPOP
-    subject 1 and MBPR subject 1 distinguishable -- they are DPOP_ID 1 and 201.
-    """
-    if study == 'cLBP_DPOP':
-        return int(subject)
-    if study == 'cLBP_MBPR':
-        return int('2' + str(int(subject)).zfill(2))
-    raise ValueError(f'Unexpected cLBP study: {study!r}')
+# canonical_clbp_id now lives in utils/subject_ids.py so extract_metrics.py can
+# key its output on the same namespace. Imported rather than duplicated: two
+# copies of an ID rule drift apart without anything failing loudly.
+from utils.subject_ids import canonical_clbp_id
 
 
 def resample_trial(trial_df):

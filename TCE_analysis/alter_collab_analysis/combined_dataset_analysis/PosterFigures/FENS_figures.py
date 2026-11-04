@@ -579,8 +579,15 @@ plt.show()
 # ######################################## HABITUATORS VS SENSITIZERS ###############################
 # ================================================================================================================
 import sys
-sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/single_dataset_analysis/')
-from habituator_sensitizers_ControlTrial import calculate_slope, calculate_windowed_difference, calculate_auc_difference, calculate_normalized_time_aware_change, bootstrap_classification, plot_hold_trials_for_subject
+sys.path.append('/Users/ljohnston1/Library/CloudStorage/OneDrive-UCSF/Desktop/Python/temporal_contrast_enhancement/TCE_analysis/alter_collab_analysis/')
+# These live in utils/hold_slope.py. They used to be imported from
+# habituator_sensitizers_ControlTrial, but `from x import f` runs all of x,
+# so getting them meant running that file's whole cLBP analysis first.
+from utils.hold_slope import (calculate_slope, calculate_windowed_difference,
+                              calculate_auc_difference,
+                              calculate_normalized_time_aware_change,
+                              bootstrap_classification,
+                              plot_hold_trials_for_subject)
 
 hold_trials = unified_data[unified_data['trial_type'].astype(str).str.contains('hold', case=False, na=False)].copy()
 hold_results = []
