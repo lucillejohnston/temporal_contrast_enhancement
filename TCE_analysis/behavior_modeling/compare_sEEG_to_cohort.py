@@ -106,43 +106,37 @@ pct.to_csv(f'{RESULTS_PATH}sEEG/{stamp}_sEEG_cohort_percentiles.csv', index=Fals
 
 #%%
 # ------------------------------------------------------------------
-# Strip plots: cohort as gray jittered dots + box, patients as labeled markers
+# Violins of the two ratios: cohort as gray violin + jittered dots, patients on top.
+# Both span orders of magnitude, so the violin is drawn on log10 values (a KDE on
+# a log axis would be distorted) and the ticks are relabelled as powers of ten.
 # ------------------------------------------------------------------
+from matplotlib.ticker import FuncFormatter, MultipleLocator
+
+VIOLIN_PANELS = [('alpha_over_beta', 'α/β  (steady-state gain)'),
+                 ('gamma_lam_over_beta', 'γλ/β  (rate-term weight)')]
+
 rng = np.random.default_rng(0)
-fig, axes = plt.subplots(3, 4, figsize=(15, 10.5))
-for ax, (col, label, log) in zip(axes.flat, PANELS):
-    ref = cohort_subj[col].dropna()
-    ref_plot = ref[ref > 0] if log else ref
-    ax.boxplot(ref_plot, positions=[0], widths=0.5, showfliers=False,
-               medianprops={'color': '#52514e', 'linewidth': 2},
-               boxprops={'color': '#52514e'}, whiskerprops={'color': '#52514e'},
-               capprops={'color': '#52514e'}, zorder=1)
-    ax.scatter(rng.uniform(-0.22, 0.22, len(ref_plot)), ref_plot, s=10,
+fig, axes = plt.subplots(1, 2, figsize=(8, 5))
+for ax, (col, label) in zip(axes, VIOLIN_PANELS):
+    ref = np.log10(cohort_subj[col][cohort_subj[col] > 0])
+    parts = ax.violinplot(ref, positions=[0], widths=0.8, showextrema=False,
+                          showmedians=True)
+    for body in parts['bodies']:
+        body.set_facecolor('#e6e5e0')
+        body.set_edgecolor('#9a9993')
+        body.set_alpha(1)
+    parts['cmedians'].set_color('#52514e')
+    parts['cmedians'].set_linewidth(2)
+    ax.scatter(rng.uniform(-0.15, 0.15, len(ref)), ref, s=10,
                color=COHORT_COLOR, alpha=0.45, linewidths=0, zorder=2)
     for i, (_, p) in enumerate(seeg_subj.iterrows()):
-        ax.scatter(-0.08 + 0.08 * i, p[col], s=80, color=PATIENT_COLORS[p['subject_uid']],
+        ax.scatter(-0.08 + 0.08 * i, np.log10(p[col]), s=80,
+                   color=PATIENT_COLORS[p['subject_uid']],
                    edgecolor='white', linewidth=1.5, zorder=4)
-    if log:
-        ax.set_yscale('log')
-    ax.set_xlim(-0.5, 0.75)
+    ax.yaxis.set_major_locator(MultipleLocator(1))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f'$10^{{{v:.0f}}}$'))
+    ax.set_xlim(-0.6, 0.6)
     ax.set_xticks([])
-    ax.set_xlabel(f'n = {len(ref)} cohort fits', fontsize=8, color='#52514e')
-
-    # Percentile labels right of the box, nudged apart where values nearly coincide
-    labels = []
-    for i, (_, p) in enumerate(seeg_subj.iterrows()):
-        pc = pct.query('subject_uid == @p.subject_uid and measure == @col')['cohort_percentile'].iloc[0]
-        y_ax = ax.transAxes.inverted().transform(ax.transData.transform((0, p[col])))[1]
-        labels.append([y_ax, -0.08 + 0.08 * i, p[col], f'{pc:.0f}%',
-                       PATIENT_COLORS[p['subject_uid']]])
-    labels.sort()
-    for k in range(1, len(labels)):
-        labels[k][0] = max(labels[k][0], labels[k - 1][0] + 0.06)
-    for y_ax, x, y, text, c in labels:
-        ax.annotate(text, xy=(x, y), xycoords='data', xytext=(0.62, y_ax),
-                    textcoords='axes fraction', va='center', fontsize=8, color='#52514e',
-                    arrowprops={'arrowstyle': '-', 'color': c, 'linewidth': 0.8,
-                                'shrinkA': 2, 'shrinkB': 5})
     ax.set_title(label, fontsize=10)
     ax.grid(axis='y', color='#e6e5e0', linewidth=0.6)
     ax.set_axisbelow(True)
@@ -151,12 +145,9 @@ for ax, (col, label, log) in zip(axes.flat, PANELS):
 
 handles = [plt.Line2D([], [], marker='o', ls='', color=c, markersize=8,
                       label=uid.replace('sEEG_', '')) for uid, c in PATIENT_COLORS.items()]
-handles.append(plt.Line2D([], [], marker='o', ls='', color=COHORT_COLOR,
-                          markersize=6, label=f'cohort ({SITE})'))
-fig.legend(handles=handles, loc='upper center', ncol=4, frameon=False,
+fig.legend(handles=handles, loc='upper center', ncol=3, frameon=False,
            bbox_to_anchor=(0.5, 1.0))
-fig.suptitle('Full-model fits: sEEG patients against the cohort '
-             '(labels = cohort percentile)', y=1.03, fontsize=12)
+fig.suptitle('Full-model fits: sEEG patients against the cohort', y=1.05, fontsize=12)
 fig.tight_layout()
 out = f'{FIG_PATH}{stamp}_sEEG_vs_cohort_parameters.png'
 fig.savefig(out, dpi=150, bbox_inches='tight')
