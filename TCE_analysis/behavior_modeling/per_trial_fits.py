@@ -786,9 +786,7 @@ for c_i, p in enumerate(DRIFT_PARAMS):
     sl = drift_slopes.get(p)
     show_sl = sl is not None and np.isfinite(sl[1])
     ax.set(xlabel='trial position in session', ylabel=PARAM_LABEL[p],
-           title=(f'{PARAM_LABEL[p]}'
-                  + (f'   {(np.exp(sl[0])-1)*100:+.2f}%/trial'
-                     f'{"*" if sl[1] < .05 else ""}' if show_sl else '')))
+           title=(f'{PARAM_LABEL[p]}'))
     ax.spines[['top', 'right']].set_visible(False)
 
     # Parameters by trial type: if they differ, trial type must stay in any
@@ -803,8 +801,7 @@ for c_i, p in enumerate(DRIFT_PARAMS):
     ax.tick_params(axis='x', labelsize=8, rotation=30)
     ax.spines[['top', 'right']].set_visible(False)
 
-fig.suptitle('Eq. 1 parameters fitted per trial '
-             f'({len(clean):,} trials, none on a bound)', fontsize=12, y=1.0)
+fig.suptitle('Eq. 1 parameters fitted per trial', fontsize=12, y=1.0)
 plt.tight_layout()
 plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_per_trial_parameter_drift.png',
             dpi=150, bbox_inches='tight')
@@ -817,18 +814,25 @@ plt.show()
 # each position (few subjects reach the late trials), so this shows the raw
 # per-subject paths instead. All forearm trials, bound hits included: dropping
 # them would leave most lines full of gaps.
+#
+# One line per session (subject x visit), not per subject: 33 cLBP subjects have
+# two visits, and trial_order restarts at 1 in each, so a per-subject line would
+# interleave the two visits.
 # ------------------------------------------------------------------
-traj = pt[site_ok].sort_values(['subject_uid', 'trial_order'])
+SESSION = ['subject_uid', 'visit']
+traj = pt[site_ok].sort_values(SESSION + ['trial_order'])
+n_sessions = traj.groupby(SESSION).ngroups
 fig, axes = plt.subplots(1, len(DRIFT_PARAMS), figsize=(4.2 * len(DRIFT_PARAMS), 4.2))
 for ax, p in zip(np.atleast_1d(axes), DRIFT_PARAMS):
-    for _, g in traj.groupby('subject_uid'):
+    for _, g in traj.groupby(SESSION):
         ax.plot(g['trial_order'], g[p], color='#6f8fae', lw=0.6, alpha=0.25)
     ax.set_yscale('log')
     ax.set(xlabel='trial position in session', ylabel=PARAM_LABEL[p],
            title=PARAM_LABEL[p])
     ax.spines[['top', 'right']].set_visible(False)
-fig.suptitle(f'Eq. 1 per-trial parameters, one line per subject '
-             f'({traj["subject_uid"].nunique()} subjects, {len(traj):,} forearm trials)',
+fig.suptitle(f'Eq. 1 per-trial parameters, one line per session '
+             f'({traj["subject_uid"].nunique()} subjects, {n_sessions} sessions, '
+             f'{len(traj):,} forearm trials)',
              fontsize=12, y=1.02)
 plt.tight_layout()
 plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_per_trial_parameter_trajectories.png',
@@ -841,9 +845,9 @@ plt.show()
 # Trial-to-trial change within subject. In log10 units because the parameters
 # span several decades: +1 = tenfold increase from one trial to the next.
 # ------------------------------------------------------------------
-delta = traj[['subject_uid', 'trial_order']].copy()
+delta = traj[SESSION + ['trial_order']].copy()
 for p in DRIFT_PARAMS:
-    delta[p] = np.log10(traj[p]).groupby(traj['subject_uid']).diff()
+    delta[p] = (np.log10(traj[p]).groupby([traj[c] for c in SESSION]).diff())
 delta = delta.dropna(subset=DRIFT_PARAMS)
 delta['transition'] = (delta['trial_order'] - 1).astype(int).astype(str) + '→' \
     + delta['trial_order'].astype(int).astype(str)
@@ -865,10 +869,78 @@ plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_per_trial_parameter_delta.png',
             dpi=150, bbox_inches='tight')
 plt.show()
 
+# The signed change centres on 0 because jumps up and down cancel, which hides
+# how big they are. The absolute change shows the size of the jump itself.
+abs_delta = delta.copy()
+abs_delta[DRIFT_PARAMS] = abs_delta[DRIFT_PARAMS].abs()
+fig, axes = plt.subplots(len(DRIFT_PARAMS), 1, figsize=(11, 2.6 * len(DRIFT_PARAMS)),
+                         sharex=True)
+for ax, p in zip(np.atleast_1d(axes), DRIFT_PARAMS):
+    sns.boxplot(data=abs_delta, x='transition', y=p, order=order, ax=ax,
+                color='lightsteelblue', fliersize=1.5)
+    ax.set_ylim(bottom=0)
+    ax.set(xlabel='', ylabel=f'|Δ log10 {p}|', title=PARAM_LABEL[p])
+    ax.spines[['top', 'right']].set_visible(False)
+np.atleast_1d(axes)[-1].set_xlabel('trial transition in session')
+fig.suptitle(f'Size of trial-to-trial change in Eq. 1 parameters, within session '
+             f'({len(abs_delta):,} transitions, forearm)', fontsize=12, y=1.0)
+plt.tight_layout()
+plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_per_trial_parameter_abs_delta.png',
+            dpi=150, bbox_inches='tight')
+plt.show()
+
+# Change relative to the session's first trial: trial 1 = 0, +1 = ten times
+# trial 1's value. Drift would show as boxes moving steadily away from 0.
+from_first = traj[SESSION + ['trial_order']].copy()
+for p in DRIFT_PARAMS:
+    lp = np.log10(traj[p])
+    from_first[p] = lp - lp.groupby([traj[c] for c in SESSION]).transform('first')
+pos_order = sorted(from_first['trial_order'].astype(int).unique())
+fig, axes = plt.subplots(len(DRIFT_PARAMS), 1, figsize=(11, 2.6 * len(DRIFT_PARAMS)),
+                         sharex=True)
+for ax, p in zip(np.atleast_1d(axes), DRIFT_PARAMS):
+    sns.boxplot(data=from_first, x=from_first['trial_order'].astype(int), y=p,
+                order=pos_order, ax=ax, color='lightsteelblue', fliersize=1.5)
+    ax.axhline(0, color='#52514e', lw=0.8, zorder=0)
+    ax.set(xlabel='', ylabel=f'log10 {p} − trial 1', title=PARAM_LABEL[p])
+    ax.spines[['top', 'right']].set_visible(False)
+np.atleast_1d(axes)[-1].set_xlabel('trial position in session')
+fig.suptitle(f'Eq. 1 parameters relative to the first trial of the session '
+             f'({n_sessions} sessions, forearm)', fontsize=12, y=1.0)
+plt.tight_layout()
+plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_per_trial_parameter_from_first.png',
+            dpi=150, bbox_inches='tight')
+plt.show()
+
+print('\nmedian log10 change from trial 1, by position:')
+print(from_first.groupby('trial_order')[DRIFT_PARAMS].median().round(2).T.to_string())
+
 print('\ntrial-to-trial |Δ log10| (median, and share of transitions > 1 decade):')
 for p in DRIFT_PARAMS:
     a = delta[p].abs()
     print(f'  {p:6s} median {a.median():.2f}   >1 decade {(a > 1).mean()*100:.0f}%')
+
+
+#%%
+# ------------------------------------------------------------------
+# How many fitted forearm trials each subject has, across all their visits.
+# (Two-visit cLBP subjects reach 21-24 here but no further than position ~12
+# in the plots above, which are per session.)
+# ------------------------------------------------------------------
+n_per_subj = traj.groupby('subject_uid').size()
+fig, ax = plt.subplots(figsize=(6, 3.8))
+ax.hist(n_per_subj, bins=np.arange(n_per_subj.min() - 0.5, n_per_subj.max() + 1.5),
+        color='lightsteelblue', edgecolor='white')
+ax.set(xlabel='Trials per subject', ylabel='subjects',
+       title=f'Trials per subject ({len(n_per_subj)} subjects)')
+ax.set_xticks(range(n_per_subj.min(), n_per_subj.max() + 1))
+ax.spines[['top', 'right']].set_visible(False)
+plt.tight_layout()
+plt.savefig(f'{FIG_PATH}{datetime.now():%Y%m%d}_trials_per_subject.png',
+            dpi=150, bbox_inches='tight')
+plt.show()
+print('\nTrials per subject:')
+print(n_per_subj.value_counts().sort_index().to_string())
 
 # Within subject, how much variability is there for each parameter?
 
