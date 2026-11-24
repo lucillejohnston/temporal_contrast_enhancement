@@ -1,48 +1,8 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-*.egg-info/
-dist/
-build/
-
-# Data, figures, archive, per-machine configs (not in git)
 data/
 figures/
 archive/
-configs/
+venv/
 OLD_TCE_behavioral_analysis/
 TEMP_*
-
-# Data files (safety net in case one lands outside data/)
-*.mat
-*.npy
-*.npz
-*.pkl
-*.pickle
-*.h5
-*.hdf5
-*.fif
-*.edf
-*.xlsx
-
-# Results
-results/
-*.png
-*.jpg
-*.pdf
-
-# IDE / OS
-.vscode/
-.idea/
-*.swp
-*.swo
 .DS_Store
 .claude/settings.local.json
-
-# Jupyter
-.ipynb_checkpoints/
